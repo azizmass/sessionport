@@ -1,0 +1,7 @@
+{"timestamp":"2026-07-25T09:13:02.242Z","type":"session_meta","payload":{"session_id":"test-codex-001","cwd":"/home/user/project","originator":"codex_cli","cli_version":"0.146.0","source":"cli","model_provider":"openai","base_instructions":{"text":"You are Codex, an AI coding assistant."}}}
+{"timestamp":"2026-07-25T09:13:02.243Z","type":"turn_context","payload":{"turn_id":"turn-001","cwd":"/home/user/project","current_date":"2026-07-25","sandbox_policy":{"type":"workspace-write"}}}
+{"timestamp":"2026-07-25T09:13:02.250Z","type":"response_item","payload":{"type":"reasoning","content":[{"type":"reasoning_summary","text":"The user wants to understand the auth flow. I should explain JWT-based authentication."}]}}
+{"timestamp":"2026-07-25T09:13:20.219Z","type":"response_item","payload":{"type":"message","id":"msg-001","role":"user","content":[{"type":"input_text","text":"What is the auth flow?"}]}}
+{"timestamp":"2026-07-25T09:14:00.000Z","type":"response_item","payload":{"type":"message","id":"msg-002","role":"assistant","content":[{"type":"output_text","text":"The auth flow uses JWT tokens."}]}}
+{"timestamp":"2026-07-25T09:14:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc-001","call_id":"call-001","name":"exec","input":"cat auth.py","status":"completed"}}
+{"timestamp":"2026-07-25T09:14:02.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco-001","call_id":"call-001","output":[{"type":"input_text","text":"def auth(): pass\n"}]}}
