@@ -1,0 +1,160 @@
+import { select, input, confirm } from '@inquirer/prompts';
+import { ClaudeReader } from '../readers/claude.js';
+import { OpenCodeReader } from '../readers/opencode.js';
+import { CodexReader } from '../readers/codex.js';
+import type { Reader } from '../readers/types.js';
+import { compactSession } from '../render/compact.js';
+import { renderJson } from '../render/json.js';
+import { renderMarkdown } from '../render/markdown.js';
+import { renderSeed } from '../render/seeds.js';
+import type { SeedTarget } from '../render/seeds.js';
+import { ClaudeImporter } from '../importers/claude.js';
+import { OpenCodeImporter } from '../importers/opencode.js';
+import { CodexImporter } from '../importers/codex.js';
+import { writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join, resolve } from 'path';
+
+export async function runWizard(): Promise<void> {
+  const sourceVal = await select<string>({
+    message: 'Select source tool:',
+    choices: [
+      { name: 'Claude Code', value: 'claude' },
+      { name: 'OpenCode', value: 'opencode' },
+      { name: 'Codex', value: 'codex' },
+    ],
+  });
+
+  let reader: Reader;
+  switch (sourceVal) {
+    case 'claude': reader = new ClaudeReader(); break;
+    case 'opencode': reader = new OpenCodeReader(); break;
+    case 'codex': reader = new CodexReader(); break;
+    default: throw new Error(`Unknown source: ${sourceVal}`);
+  }
+
+  const sessions = reader.listSessions();
+  if (sessions.length === 0) {
+    console.log(`No sessions found for ${sourceVal}.`);
+    return;
+  }
+
+  const sessionChoice = await select<string>({
+    message: `Select session (${sessions.length} available, use arrows to browse):`,
+    choices: sessions.map((s) => ({
+      name: `${s.title.slice(0, 65).padEnd(67)} ${new Date(s.createdAt).toLocaleDateString('en-CA')}${s.model ? ' [' + s.model + ']' : ''}`,
+      value: s.id,
+    })),
+    pageSize: 10,
+  });
+
+  const mode = await select<'as-is' | 'compacted'>({
+    message: 'Export mode:',
+    choices: [
+      { name: 'As-is (full conversation history)', value: 'as-is' },
+      { name: 'Compacted (summarized tool calls/outputs, trimmed reasoning)', value: 'compacted' },
+    ],
+  });
+
+  const target = await select<string>({
+    message: 'Target:',
+    choices: [
+      { name: '📥 Import into Claude Code', value: 'import-claude' },
+      { name: '📥 Import into OpenCode', value: 'import-opencode' },
+      { name: '📥 Import into Codex', value: 'import-codex' },
+      { name: '───── Export to file ─────', value: '-sep-' },
+      { name: '📄 Portable JSON (.session.json)', value: 'json' },
+      { name: '📄 Readable markdown (.md)', value: 'markdown' },
+      { name: '🌱 Seed prompt for OpenCode', value: 'opencode' },
+      { name: '🌱 Seed prompt for Claude Code', value: 'claude' },
+      { name: '🌱 Seed prompt for Codex', value: 'codex' },
+      { name: '🌱 Seed prompt (generic)', value: 'generic' },
+    ],
+  });
+
+  if (target === '-sep-') {
+    console.log('Please select a valid target.');
+    return;
+  }
+
+  console.log(`Reading session...`);
+  const session = reader.readSession(sessionChoice);
+  const finalSession = mode === 'compacted' ? compactSession(session) : session;
+
+  if (target.startsWith('import-')) {
+    const importTarget = target.replace('import-', '');
+    await doImport(finalSession, importTarget);
+  } else {
+    await doExport(finalSession, target as SeedTarget | 'json' | 'markdown', mode);
+  }
+}
+
+async function doImport(session: import('../ir/types.js').SessionIR, target: string): Promise<void> {
+  try {
+    let result;
+    switch (target) {
+      case 'claude': {
+        const importer = new ClaudeImporter();
+        result = importer.importSession(session);
+        console.log(`\n✅ Session imported into Claude Code!`);
+        console.log(`   Title: "${session.title}"`);
+        console.log(`   Messages: ${result.messageCount}`);
+        console.log(`   File: ${result.path}`);
+        console.log(`\n   ▶ Open Claude Code and run: claude --resume`);
+        console.log(`   (Or run \`claude --continue\` in the same directory)`);
+        break;
+      }
+      case 'opencode': {
+        const importer = new OpenCodeImporter();
+        result = importer.importSession(session);
+        console.log(`\n✅ Session imported into OpenCode!`);
+        console.log(`   Title: "${session.title}"`);
+        console.log(`   Messages: ${result.messageCount}`);
+        console.log(`\n   ▶ Open OpenCode and find "${session.title.slice(0, 40)}..." in your session list.`);
+        console.log(`   (DB backup saved at: opencode.db.sessionport-backup)`);
+        break;
+      }
+      case 'codex': {
+        const importer = new CodexImporter();
+        result = importer.importSession(session);
+        console.log(`\n✅ Session imported into Codex!`);
+        console.log(`   Title: "${session.title}"`);
+        console.log(`   Messages: ${result.messageCount}`);
+        console.log(`\n   ▶ Open Codex and find "${session.title.slice(0, 40)}..." in your session list.`);
+        break;
+      }
+    }
+  } catch (err) {
+    console.error(`\n❌ Import failed: ${(err as Error).message}`);
+  }
+}
+
+async function doExport(
+  session: import('../ir/types.js').SessionIR,
+  target: SeedTarget | 'json' | 'markdown',
+  mode: string,
+): Promise<void> {
+  const outDir = await input({
+    message: 'Output directory:',
+    default: './export',
+  });
+
+  const resolvedDir = resolve(outDir);
+  if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
+
+  const baseName = `${session.sourceTool}_${session.id.slice(0, 12)}_${mode}`.replace(/[^a-z0-9_-]/g, '_');
+  const seedTargets = new Set<string>(['opencode', 'claude', 'codex', 'generic']);
+
+  if (target === 'json') {
+    const outPath = join(resolvedDir, `${baseName}.session.json`);
+    writeFileSync(outPath, renderJson(session), 'utf-8');
+    console.log(`\n📄 JSON session exported:\n   ${outPath}`);
+  } else if (target === 'markdown') {
+    const outPath = join(resolvedDir, `${baseName}.md`);
+    writeFileSync(outPath, renderMarkdown(session, { compacted: mode === 'compacted' }), 'utf-8');
+    console.log(`\n📄 Markdown transcript exported:\n   ${outPath}`);
+  } else if (seedTargets.has(target)) {
+    const outPath = join(resolvedDir, `${baseName}_to_${target}.seed.md`);
+    writeFileSync(outPath, renderSeed(session, target as SeedTarget), 'utf-8');
+    console.log(`\n🌱 Seed prompt for ${target} exported:\n   ${outPath}`);
+  }
+}
