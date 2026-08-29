@@ -12,6 +12,9 @@ import {
   claudeUuid, claudeProjectSlug, codexSessionId, codexTurnId, codexCallId, codexToolCallId,
 } from '../src/importers/ids.js';
 import type { SessionIR } from '../src/ir/types.js';
+import { ClaudeReader } from '../src/readers/claude.js';
+import { extractPlans, selectPlans } from '../src/ir/plan.js';
+import { planSession } from '../src/render/plan.js';
 
 interface EventRow {
   id: string;
@@ -312,6 +315,37 @@ describe('OpenCodeImporter', () => {
 
   afterAll(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('imports a plan-only session that opencode can open in plan mode', () => {
+    const dbPath = createTestDb();
+    const source = new ClaudeReader(
+      join(import.meta.dirname, 'fixtures', 'claude-projects'),
+    ).readSession('claude-plan');
+    const ir = planSession(source, selectPlans(extractPlans(source)));
+
+    const result = new OpenCodeImporter(dbPath).importSession(ir);
+    expect(result.target).toBe('opencode');
+    expect(result.messageCount).toBe(1);
+
+    const db = new Database(dbPath);
+    const row = db
+      .prepare('SELECT title, agent FROM session WHERE id = ?')
+      .get(result.sessionId) as { title: string; agent: string };
+    expect(row.title).toBe('Refactor auth, take two');
+    expect(row.agent).toBe('plan');
+
+    const parts = db
+      .prepare(
+        `SELECT json_extract(data, '$.type') AS type, json_extract(data, '$.text') AS text
+         FROM part WHERE session_id = ?`,
+      )
+      .all(result.sessionId) as { type: string; text: string }[];
+    expect(parts).toHaveLength(1);
+    expect(parts[0].type).toBe('text');
+    expect(parts[0].text).toContain('# Refactor auth, take two');
+    expect(parts[0].text).toContain('Ported from the claude session');
+    db.close();
   });
 
   it('imports a session into opencode.db', () => {

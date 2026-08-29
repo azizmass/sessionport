@@ -10,6 +10,7 @@ npx sessionport                  # interactive wizard
 sp list claude                   # shorthand alias
 sessionport export claude <id> --to markdown --mode compacted
 sessionport import claude <id> opencode
+sessionport plan claude <id> --to opencode
 sessionport inspect opencode <id> --mode compacted
 ```
 
@@ -75,6 +76,29 @@ sessionport import codex <id> opencode --mode compacted
 
 Supports Claude JSONL, OpenCode SQLite (`session`, `message`, `part`, `event`,
 `event_sequence` tables), and Codex rollout JSONL.
+
+### `sessionport plan <source> <id>`
+
+Port just the plan from a session that used plan mode, instead of the whole
+conversation. Claude Code records a plan as the input to the tool call that
+leaves plan mode; this extracts it and hands it to the target tool as the
+opening user message, so the session is ready to be executed.
+
+```bash
+sessionport plan claude <id>                    # straight into OpenCode
+sessionport plan claude <id> --to markdown      # write it to ./export
+sessionport plan claude <id> --to stdout        # read it in the terminal
+sessionport plan claude <id> --all              # keep every revision
+```
+
+The imported OpenCode session is titled after the plan's own heading, opens on
+the `plan` agent, and keeps the original working directory. A session can hold
+several plans — one per revision — and the final one is used unless `--all` is
+given. Sessions that never used plan mode exit with an error rather than
+exporting an empty document.
+
+The interactive wizard offers the same thing: pick a session that has a plan and
+it asks whether to port the whole session or just the plan.
 
 ### `sessionport inspect <source> <id>`
 

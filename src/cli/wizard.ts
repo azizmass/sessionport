@@ -14,6 +14,8 @@ import { CodexImporter } from '../importers/codex.js';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { displayTitle, formatSessionTime } from '../ir/normalize.js';
+import { extractPlans, selectPlans } from '../ir/plan.js';
+import { planSession, renderPlanMarkdown } from '../render/plan.js';
 
 export async function runWizard(): Promise<void> {
   const sourceVal = await select<string>({
@@ -48,6 +50,30 @@ export async function runWizard(): Promise<void> {
     pageSize: 10,
   });
 
+  console.log(`Reading session...`);
+  const sourceSession = reader.readSession(sessionChoice);
+  const plans = extractPlans(sourceSession);
+
+  // Plans only exist for sessions where plan mode was used, so the question is
+  // only worth asking when there is one to port.
+  const what = plans.length
+    ? await select<'session' | 'plan'>({
+        message: 'What do you want to port?',
+        choices: [
+          { name: 'The whole session', value: 'session' },
+          {
+            name: `Just the plan${plans.length > 1 ? ` (${plans.length} revisions)` : ''}`,
+            value: 'plan',
+          },
+        ],
+      })
+    : 'session';
+
+  if (what === 'plan') {
+    await doPlan(sourceSession, plans);
+    return;
+  }
+
   const mode = await select<'as-is' | 'compacted'>({
     message: 'Export mode:',
     choices: [
@@ -77,9 +103,7 @@ export async function runWizard(): Promise<void> {
     return;
   }
 
-  console.log(`Reading session...`);
-  const session = reader.readSession(sessionChoice);
-  const finalSession = mode === 'compacted' ? compactSession(session) : session;
+  const finalSession = mode === 'compacted' ? compactSession(sourceSession) : sourceSession;
 
   if (target.startsWith('import-')) {
     const importTarget = target.replace('import-', '');
@@ -87,6 +111,43 @@ export async function runWizard(): Promise<void> {
   } else {
     await doExport(finalSession, target as SeedTarget | 'json' | 'markdown', mode);
   }
+}
+
+async function doPlan(
+  session: import('../ir/types.js').SessionIR,
+  found: import('../ir/plan.js').PlanIR[],
+): Promise<void> {
+  const all =
+    found.length > 1 &&
+    (await confirm({
+      message: `Include all ${found.length} plan revisions? (No = only the final one)`,
+      default: false,
+    }));
+
+  const plans = selectPlans(found, all);
+  const planIR = planSession(session, plans);
+
+  const target = await select<string>({
+    message: 'Send the plan to:',
+    choices: [
+      { name: '📥 OpenCode', value: 'opencode' },
+      { name: '📥 Claude Code', value: 'claude' },
+      { name: '📥 Codex', value: 'codex' },
+      { name: '📄 Markdown file', value: 'markdown' },
+    ],
+  });
+
+  if (target === 'markdown') {
+    const outDir = await input({ message: 'Output directory:', default: './export' });
+    const resolvedDir = resolve(outDir);
+    if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
+    const outPath = join(resolvedDir, `${session.id.slice(0, 12)}_plan.md`);
+    writeFileSync(outPath, renderPlanMarkdown(session, plans), 'utf-8');
+    console.log(`\n✅ Plan written: ${outPath}`);
+    return;
+  }
+
+  await doImport(planIR, target);
 }
 
 async function doImport(session: import('../ir/types.js').SessionIR, target: string): Promise<void> {

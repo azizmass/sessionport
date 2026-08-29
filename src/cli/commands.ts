@@ -17,6 +17,8 @@ import { OpenCodeImporter } from '../importers/opencode.js';
 import { CodexImporter } from '../importers/codex.js';
 import type { ImportResult } from '../importers/types.js';
 import { displayTitle, formatSessionTime } from '../ir/normalize.js';
+import { extractPlans, selectPlans } from '../ir/plan.js';
+import { planSession, renderPlanMarkdown } from '../render/plan.js';
 
 function getReader(source: string): Reader {
   switch (source) {
@@ -212,6 +214,86 @@ function importSession(
   }
 }
 
+function exportPlan(
+  source: string,
+  id: string,
+  target: string,
+  all: boolean,
+  outputDir: string,
+  quiet: boolean,
+): void {
+  const reader = getReader(source);
+  let session: SessionIR;
+  try {
+    session = reader.readSession(id);
+  } catch (err) {
+    console.error(`Error reading session: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  const found = extractPlans(session);
+  if (found.length === 0) {
+    console.error(
+      `No plan found in ${source} session ${id}. Only sessions where plan mode was used carry one.`,
+    );
+    process.exit(1);
+  }
+
+  const plans = selectPlans(found, all);
+  const planIR = planSession(session, plans);
+
+  if (target === 'markdown') {
+    const resolvedDir = resolve(outputDir);
+    if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
+    const safeName = `${session.sourceTool}_${session.id.slice(0, 12)}_plan`.replace(/[^a-z0-9_-]/gi, '_');
+    const outPath = join(resolvedDir, `${safeName}.md`);
+    writeFileSync(outPath, renderPlanMarkdown(session, plans), 'utf-8');
+    if (!quiet) console.log(`Written: ${outPath}`);
+    return;
+  }
+
+  if (target === 'stdout') {
+    console.log(renderPlanMarkdown(session, plans));
+    return;
+  }
+
+  let result: ImportResult;
+  try {
+    switch (target) {
+      case 'opencode': {
+        result = new OpenCodeImporter().importSession(planIR);
+        break;
+      }
+      case 'claude': {
+        result = new ClaudeImporter().importSession(planIR);
+        break;
+      }
+      case 'codex': {
+        result = new CodexImporter().importSession(planIR);
+        break;
+      }
+      default:
+        console.error(
+          `Unknown plan target: ${target}. Use: opencode, claude, codex, markdown, stdout`,
+        );
+        process.exit(1);
+    }
+  } catch (err) {
+    console.error(`❌ Plan export failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  if (quiet) return;
+  const revisions = plans.length > 1 ? ` (${plans.length} revisions)` : '';
+  console.log(`✅ Exported plan "${planIR.title}"${revisions} → ${target}`);
+  if (target === 'opencode') {
+    console.log(`   Open OpenCode and pick it from your session list to start executing it.`);
+  } else if (target === 'claude') {
+    console.log(`   Run \`claude --resume\` in ${planIR.cwd ?? 'the project directory'} to pick it up.`);
+  }
+  if (result.path) console.log(`   ${result.path}`);
+}
+
 export function createProgram(): Command {
   const program = new Command();
 
@@ -304,6 +386,21 @@ export function createProgram(): Command {
     .action(
       (source: string, id: string, target: string, options: { mode: string }) => {
         importSession(source, id, options.mode as 'as-is' | 'compacted', target);
+      },
+    );
+
+  program
+    .command('plan')
+    .description('Export the plan from a session (plan mode) into another tool')
+    .argument('<source>', 'Source tool: claude, opencode, codex')
+    .argument('<id>', 'Session ID')
+    .option('-t, --to <target>', 'Target: opencode, claude, codex, markdown, stdout', 'opencode')
+    .option('-a, --all', 'Include every plan revision, not just the final one')
+    .option('-o, --out <dir>', 'Output directory (markdown only)', './export')
+    .option('-q, --quiet', 'Suppress progress output')
+    .action(
+      (source: string, id: string, options: { to: string; all?: boolean; out: string; quiet?: boolean }) => {
+        exportPlan(source, id, options.to, options.all ?? false, options.out, options.quiet ?? false);
       },
     );
 
