@@ -29,10 +29,6 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
 
-      # Trusted publishing (OIDC) needs npm >= 11.5.1, newer than the bundled one.
-      - name: Use a publish-capable npm
-        run: npm install -g npm@latest
-
       - run: npm ci
 
       - name: Check the tag matches the package version
@@ -60,10 +56,17 @@ jobs:
       - name: Test
         run: npm test
 
-      # Auth comes from npm trusted publishing: this repo + publish-npm-package.yml are
-      # registered as a trusted publisher on npmjs.com, and the id-token
-      # permission above lets npm exchange the OIDC token for a short-lived
-      # publish credential. No NPM_TOKEN secret is involved.
+      # Trusted publishing (OIDC) needs npm >= 11.5.1, newer than the bundled
+      # one. Upgrade only here, after the install: current npm blocks dependency
+      # install scripts unless they are allowlisted, which would leave
+      # better-sqlite3 without its native binding and fail the tests above.
+      - name: Use a publish-capable npm
+        run: npm install -g npm@latest
+
+      # Auth comes from npm trusted publishing: this repository and this
+      # workflow file are registered as a trusted publisher on npmjs.com, and
+      # the id-token permission above lets npm exchange the OIDC token for a
+      # short-lived publish credential. No NPM_TOKEN secret is involved.
       # To fall back to a token instead, add:
       #   env:
       #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
