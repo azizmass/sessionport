@@ -25,12 +25,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: https://registry.npmjs.org
           cache: npm
 
-      # Trusted publishing (OIDC) needs a recent npm; the one bundled with
-      # Node 20 is too old.
+      # Trusted publishing (OIDC) needs npm >= 11.5.1, newer than the bundled one.
       - name: Use a publish-capable npm
         run: npm install -g npm@latest
 
