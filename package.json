@@ -1,6 +1,6 @@
 {
   "name": "sessionport",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Port AI coding sessions between tools — Claude Code ↔ OpenCode ↔ Codex. Export, import, compact, and migrate sessions with full fidelity.",
   "type": "module",
   "bin": {
