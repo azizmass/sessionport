@@ -60,12 +60,15 @@ jobs:
       - name: Test
         run: npm test
 
-      # Auth: either configure this repo as a trusted publisher on npmjs.com
-      # (no secret needed), or add an automation token as the NPM_TOKEN secret.
+      # Auth comes from npm trusted publishing: this repo + publish.yml are
+      # registered as a trusted publisher on npmjs.com, and the id-token
+      # permission above lets npm exchange the OIDC token for a short-lived
+      # publish credential. No NPM_TOKEN secret is involved.
+      # To fall back to a token instead, add:
+      #   env:
+      #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create the GitHub release
         if: startsWith(github.ref, 'refs/tags/')

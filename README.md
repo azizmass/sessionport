@@ -226,14 +226,20 @@ publishes with provenance, and opens a GitHub release with generated notes.
 `workflow_dispatch` runs the same pipeline manually, which is the way to retry
 a publish that failed after the tag was already pushed.
 
-**One-time auth setup** — pick either:
+**One-time auth setup.** Publishing uses npm trusted publishing, so there is no
+token to store or rotate. On npmjs.com, open the package's
+*Settings → Trusted publishers* and add a GitHub Actions publisher with:
 
-- **Trusted publishing (recommended, no secrets):** on npmjs.com, open the
-  package's *Settings → Trusted publishers*, add a GitHub Actions publisher for
-  this repository with workflow `publish.yml`. The workflow's `id-token: write`
-  permission does the rest.
-- **Automation token:** create a *Granular access* or *Automation* token on
-  npmjs.com and add it to the repository as the `NPM_TOKEN` secret.
+| Field | Value |
+| --- | --- |
+| Organization or user | `azizmass` |
+| Repository | `sessionport` |
+| Workflow filename | `publish.yml` |
+| Environment | *(leave empty)* |
+
+The workflow's `id-token: write` permission does the rest. To use an automation
+token instead, add it as the `NPM_TOKEN` secret and restore the `NODE_AUTH_TOKEN`
+env block noted in `publish.yml`.
 
 Publishing by hand still works (`npm run build && npm test && npm publish`) and
 requires `npm login`.
