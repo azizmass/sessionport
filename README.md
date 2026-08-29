@@ -207,20 +207,36 @@ Session → Message[] (role: user/assistant/system)
 - Full transactional insert — if any event fails, nothing is committed.
 - Cleans up orphaned sessions that have no event history via `sessionport cleanup opencode`.
 
-## npm Publishing
+## Releasing
+
+Every push to `main` and every pull request runs `.github/workflows/ci.yml`
+(build + tests on Node 20 and 22, plus a `npm pack --dry-run` check of the
+published file list).
+
+Releases are cut by tagging — `.github/workflows/publish.yml` does the rest:
 
 ```bash
-# 1. Build and test
-npm run build && npm test
-
-# 2. Bump version
-npm version patch  # or minor / major
-
-# 3. Publish
-npm publish
+npm version patch      # or minor / major — commits and tags vX.Y.Z
+git push --follow-tags
 ```
 
-Requires an npm account and login (`npm login`).
+The publish workflow re-runs the build and tests, refuses to continue if the
+tag and `package.json` version disagree or if that version is already on npm,
+publishes with provenance, and opens a GitHub release with generated notes.
+`workflow_dispatch` runs the same pipeline manually, which is the way to retry
+a publish that failed after the tag was already pushed.
+
+**One-time auth setup** — pick either:
+
+- **Trusted publishing (recommended, no secrets):** on npmjs.com, open the
+  package's *Settings → Trusted publishers*, add a GitHub Actions publisher for
+  this repository with workflow `publish.yml`. The workflow's `id-token: write`
+  permission does the rest.
+- **Automation token:** create a *Granular access* or *Automation* token on
+  npmjs.com and add it to the repository as the `NPM_TOKEN` secret.
+
+Publishing by hand still works (`npm run build && npm test && npm publish`) and
+requires `npm login`.
 
 ## License
 
