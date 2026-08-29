@@ -4,8 +4,8 @@
   "description": "Port AI coding sessions between tools — Claude Code ↔ OpenCode ↔ Codex. Export, import, compact, and migrate sessions with full fidelity.",
   "type": "module",
   "bin": {
-    "sessionport": "./dist/cli/index.js",
-    "sp": "./dist/cli/index.js"
+    "sessionport": "dist/cli/index.js",
+    "sp": "dist/cli/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
