@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import type { SourceTool, ModelInfo, TokenUsage, MessageIR, PartIR, SessionIR } from '../ir/types.js';
 import type { Reader, SessionSummary } from './types.js';
 import { opencodeDbPath } from '../paths.js';
+import { cleanTitle, displayTitle, isPlaceholderTitle, UNTITLED } from '../ir/normalize.js';
 
 export interface OpenCodePartData {
   type: string;
@@ -70,6 +71,19 @@ function parseMessageData(jsonStr: string): OpenCodeMessageData {
   return JSON.parse(jsonStr);
 }
 
+/** Text of the last message that carried any, for use as a title fallback. */
+function lastTextOf(messages: MessageIR[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    for (const part of messages[i].parts) {
+      if (part.kind === 'text' && part.text.trim()) {
+        const cleaned = cleanTitle(part.text);
+        if (cleaned !== UNTITLED) return cleaned;
+      }
+    }
+  }
+  return undefined;
+}
+
 function parsePartData(jsonStr: string): OpenCodePartData {
   return JSON.parse(jsonStr);
 }
@@ -135,17 +149,46 @@ export class OpenCodeReader implements Reader {
            FROM session ORDER BY time_updated DESC`,
         )
         .all() as OpenCodeSessionRow[];
-      db.close();
 
-      return rows.map((r) => ({
-        id: r.id,
-        title: r.title,
-        tool: 'opencode',
-        createdAt: r.time_created,
-        updatedAt: r.time_updated,
-        model: r.model ? parseModel(r.model)?.id : undefined,
-        path: r.directory,
-      }));
+      // OpenCode stores "New session - <iso>" placeholders for unnamed sessions;
+      // pull their last text part so the list can show something meaningful.
+      const lastText = db.prepare(
+        `SELECT data FROM part
+         WHERE session_id = ?
+           AND json_extract(data, '$.type') = 'text'
+           AND trim(coalesce(json_extract(data, '$.text'), '')) != ''
+         ORDER BY time_created DESC LIMIT 5`,
+      );
+
+      const summaries = rows.map((r) => {
+        let lastMessage: string | undefined;
+        if (isPlaceholderTitle(r.title)) {
+          try {
+            for (const row of lastText.all(r.id) as { data: string }[]) {
+              const cleaned = cleanTitle(parsePartData(row.data).text ?? '');
+              if (cleaned !== UNTITLED) {
+                lastMessage = cleaned;
+                break;
+              }
+            }
+          } catch {
+            // no readable last message — the timestamp fallback still applies
+          }
+        }
+        return {
+          id: r.id,
+          title: r.title,
+          tool: 'opencode',
+          createdAt: r.time_created,
+          updatedAt: r.time_updated,
+          model: r.model ? parseModel(r.model)?.id : undefined,
+          path: r.directory,
+          lastMessage,
+        };
+      });
+
+      db.close();
+      return summaries;
     } catch {
       return [];
     }
@@ -258,7 +301,12 @@ export class OpenCodeReader implements Reader {
       return {
         id: sessionRow.id,
         sourceTool: 'opencode' as SourceTool,
-        title: sessionRow.title,
+        title: displayTitle({
+          title: sessionRow.title,
+          lastMessage: lastTextOf(messages),
+          updatedAt: sessionRow.time_updated,
+          createdAt: sessionRow.time_created,
+        }),
         cwd: sessionRow.directory || undefined,
         model,
         createdAt: sessionRow.time_created,

@@ -3,7 +3,13 @@ import { join } from 'path';
 import type { SourceTool, ModelInfo, TokenUsage, MessageIR, PartIR, SessionIR } from '../ir/types.js';
 import type { Reader, SessionSummary } from './types.js';
 import { claudeProjectsDir } from '../paths.js';
-import { cleanTitle as normalize_cleanTitle } from '../ir/normalize.js';
+import {
+  cleanTitle as normalize_cleanTitle,
+  displayTitle,
+  extractText,
+  isPlaceholderTitle,
+  UNTITLED,
+} from '../ir/normalize.js';
 
 interface ClaudeEvent {
   type: string;
@@ -44,6 +50,9 @@ interface ClaudeContentBlock {
   signatures?: string[];
   thinking?: string;
 }
+
+/** How many lines to scan from each end of a session file when summarising it. */
+const SCAN_LINES = 400;
 
 function parseTimestamp(ts: string): number {
   return new Date(ts).getTime();
@@ -96,25 +105,50 @@ function contentBlockToPart(block: ClaudeContentBlock): PartIR | null {
 function extractTitle(events: ClaudeEvent[]): string {
   for (const e of events) {
     if (e.type === 'user' && !e.isMeta && e.message) {
-      const content = e.message.content;
-      const raw = typeof content === 'string' ? content : JSON.stringify(content);
-      const cleaned = normalize_cleanTitle(raw);
-      if (cleaned !== 'Untitled Session') return cleaned;
+      const cleaned = normalize_cleanTitle(extractText(e.message.content));
+      if (cleaned !== UNTITLED) return cleaned;
     }
   }
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.type === 'last-prompt' && typeof e.content === 'string') {
       const cleaned = normalize_cleanTitle(e.content);
-      if (cleaned !== 'Untitled Session') return cleaned;
+      if (cleaned !== UNTITLED) return cleaned;
     }
   }
-  return 'Untitled Session';
+  return UNTITLED;
+}
+
+/** Last human-readable message in the session, newest first. */
+function extractLastMessage(events: ClaudeEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === 'last-prompt' && typeof e.content === 'string') {
+      const cleaned = normalize_cleanTitle(e.content);
+      if (cleaned !== UNTITLED) return cleaned;
+    }
+    if ((e.type !== 'user' && e.type !== 'assistant') || e.isMeta || !e.message) continue;
+    const cleaned = normalize_cleanTitle(extractText(e.message.content));
+    if (cleaned !== UNTITLED) return cleaned;
+  }
+  return undefined;
+}
+
+function parseJsonlLines(lines: string[]): ClaudeEvent[] {
+  const events: ClaudeEvent[] = [];
+  for (const line of lines) {
+    try {
+      events.push(JSON.parse(line) as ClaudeEvent);
+    } catch {
+      // skip truncated or malformed lines rather than losing the whole session
+    }
+  }
+  return events;
 }
 
 function parseClaudeEvents(filePath: string, content: string): SessionIR {
   const lines = content.split('\n').filter(Boolean);
-  const events: ClaudeEvent[] = lines.map((l) => JSON.parse(l));
+  const events: ClaudeEvent[] = parseJsonlLines(lines);
 
   const messages: MessageIR[] = [];
   let sessionId = '';
@@ -182,11 +216,17 @@ function parseClaudeEvents(filePath: string, content: string): SessionIR {
     }
   }
 
-  const title = extractTitle(events);
   const timestamps = messages
     .map((m) => m.timestamp)
     .filter((t) => t > 0)
-    .sort();
+    .sort((a, b) => a - b);
+  const updatedAt = Date.now();
+  const title = displayTitle({
+    title: extractTitle(events),
+    lastMessage: extractLastMessage(events),
+    updatedAt: timestamps[timestamps.length - 1] ?? updatedAt,
+    createdAt: timestamps[0],
+  });
 
   return {
     id: sessionId,
@@ -196,7 +236,7 @@ function parseClaudeEvents(filePath: string, content: string): SessionIR {
     cwd: cwd || undefined,
     model,
     createdAt: timestamps[0] ?? Date.now(),
-    updatedAt: Date.now(),
+    updatedAt,
     messages,
   };
 }
@@ -236,16 +276,23 @@ export class ClaudeReader implements Reader {
 
         const sessionId = entry.replace(/\.jsonl$/, '');
         try {
-          const firstLines = readFileSync(filePath, 'utf-8')
-            .split('\n')
-            .slice(0, 10)
-            .filter(Boolean);
-          const events: ClaudeEvent[] = firstLines.map((l) => JSON.parse(l));
-          const title = extractTitle(events);
-          const model = events.find((e) => e.message?.model)?.message?.model;
+          const lines = readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+          // The opening events are usually meta noise (/clear, caveats, hooks),
+          // so scan well past them for the first real prompt, and scan the tail
+          // for a fallback when the session never had a titleable message.
+          const head = parseJsonlLines(lines.slice(0, SCAN_LINES));
+          const tail =
+            lines.length > SCAN_LINES
+              ? parseJsonlLines(lines.slice(-SCAN_LINES))
+              : head;
+          const title = extractTitle(head);
+          const lastMessage = extractLastMessage(tail) ?? extractLastMessage(head);
+          const model =
+            tail.find((e) => e.message?.model)?.message?.model ??
+            head.find((e) => e.message?.model)?.message?.model;
 
           let createdAt = stat.mtimeMs;
-          for (const e of events) {
+          for (const e of head) {
             if (e.timestamp) {
               const ts = parseTimestamp(e.timestamp);
               if (ts && ts < createdAt) createdAt = ts;
@@ -260,6 +307,7 @@ export class ClaudeReader implements Reader {
             updatedAt: stat.mtimeMs,
             model,
             path: filePath,
+            lastMessage,
           });
         } catch {
           // skip unparseable files

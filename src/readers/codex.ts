@@ -3,11 +3,11 @@ import { join } from 'path';
 import type { SourceTool, ModelInfo, MessageIR, PartIR, SessionIR } from '../ir/types.js';
 import type { Reader, SessionSummary } from './types.js';
 import { codexDir, codexIndexPath } from '../paths.js';
-import { cleanTitle } from '../ir/normalize.js';
+import { cleanTitle, displayTitle, UNTITLED } from '../ir/normalize.js';
 
 interface CodexIndexEntry {
   id: string;
-  thread_name: string;
+  thread_name?: string;
   updated_at: string;
 }
 
@@ -184,24 +184,41 @@ function parseCodexJsonl(filePath: string, content: string): SessionIR {
         for (const p of m.parts) {
           if (p.kind === 'text') {
             const c = cleanTitle(p.text);
-            if (c !== 'Untitled Session') return c;
+            if (c !== UNTITLED) return c;
           }
         }
       }
     }
-    return 'Untitled Codex Session';
+    return UNTITLED;
+  })();
+
+  const lastMessage = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      for (const p of messages[i].parts) {
+        if (p.kind === 'text' && p.text.trim()) {
+          const c = cleanTitle(p.text);
+          if (c !== UNTITLED) return c;
+        }
+      }
+    }
+    return undefined;
   })();
 
   const timestamps = messages
     .map((m) => m.timestamp)
     .filter((t) => t > 0)
-    .sort();
+    .sort((a, b) => a - b);
 
   return {
     id: sessionId,
     sourceTool: 'codex' as SourceTool,
     sourcePath: filePath,
-    title: titleFromEvents,
+    title: displayTitle({
+      title: titleFromEvents,
+      lastMessage,
+      updatedAt: timestamps[timestamps.length - 1],
+      createdAt: timestamps[0],
+    }),
     cwd: cwd || undefined,
     model,
     createdAt: timestamps[0] ?? Date.now(),
@@ -232,7 +249,7 @@ export class CodexReader implements Reader {
         const entry: CodexIndexEntry = JSON.parse(line);
         results.push({
           id: entry.id,
-          title: entry.thread_name,
+          title: entry.thread_name ?? '',
           tool: 'codex',
           createdAt: new Date(entry.updated_at).getTime(),
           updatedAt: new Date(entry.updated_at).getTime(),

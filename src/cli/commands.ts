@@ -16,6 +16,7 @@ import { ClaudeImporter } from '../importers/claude.js';
 import { OpenCodeImporter } from '../importers/opencode.js';
 import { CodexImporter } from '../importers/codex.js';
 import type { ImportResult } from '../importers/types.js';
+import { displayTitle, formatSessionTime } from '../ir/normalize.js';
 
 function getReader(source: string): Reader {
   switch (source) {
@@ -36,10 +37,11 @@ function listSessions(source: string): void {
   console.log(`\n${source.toUpperCase()} sessions:`);
   console.log('-'.repeat(80));
   for (const s of sessions) {
-    const date = new Date(s.createdAt).toLocaleDateString('en-CA');
+    const updated = formatSessionTime(s.updatedAt || s.createdAt);
     const model = s.model ? ` [${s.model}]` : '';
+    const label = displayTitle(s, 50);
     console.log(
-      `  ${s.id.padEnd(44)} ${date}  ${s.title.slice(0, 50).padEnd(52)}${model}`,
+      `  ${s.id.padEnd(44)} ${updated}  ${label.padEnd(52)}${model}`,
     );
   }
   console.log();

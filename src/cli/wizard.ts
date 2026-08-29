@@ -13,6 +13,7 @@ import { OpenCodeImporter } from '../importers/opencode.js';
 import { CodexImporter } from '../importers/codex.js';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
+import { displayTitle, formatSessionTime } from '../ir/normalize.js';
 
 export async function runWizard(): Promise<void> {
   const sourceVal = await select<string>({
@@ -41,7 +42,7 @@ export async function runWizard(): Promise<void> {
   const sessionChoice = await select<string>({
     message: `Select session (${sessions.length} available, use arrows to browse):`,
     choices: sessions.map((s) => ({
-      name: `${s.title.slice(0, 65).padEnd(67)} ${new Date(s.createdAt).toLocaleDateString('en-CA')}${s.model ? ' [' + s.model + ']' : ''}`,
+      name: `${displayTitle(s, 65).padEnd(67)} ${formatSessionTime(s.updatedAt || s.createdAt)}${s.model ? ' [' + s.model + ']' : ''}`,
       value: s.id,
     })),
     pageSize: 10,

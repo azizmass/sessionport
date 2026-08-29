@@ -9,6 +9,7 @@ import { renderJson } from '../src/render/json.js';
 import { renderMarkdown } from '../src/render/markdown.js';
 import { renderSeed } from '../src/render/seeds.js';
 import { createOpenCodeFixture } from './fixtures/gen-fixtures.js';
+import { displayTitle } from '../src/ir/normalize.js';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures');
 const OPENCODE_DB = join(FIXTURES, 'opencode-test.db');
@@ -26,6 +27,30 @@ describe('ClaudeReader', () => {
       expect(s.title).toBeTruthy();
       expect(s.tool).toBe('claude');
     }
+  });
+
+  it('titles a session from the first real prompt, past the meta preamble', () => {
+    const reader = new ClaudeReader(CLAUDE_PROJECTS);
+    const s = reader.listSessions().find((s) => s.id === 'claude-noisy');
+    expect(s).toBeDefined();
+    expect(s!.title).toBe('Fix the session list titles');
+    expect(s!.lastMessage).toBe('Done — titles now fall back sensibly.');
+    expect(s!.model).toBe('claude-opus-5');
+  });
+
+  it('leaves sessions with no real prompt untitled, with a last message to fall back on', () => {
+    const reader = new ClaudeReader(CLAUDE_PROJECTS);
+    const s = reader.listSessions().find((s) => s.id === 'claude-blank');
+    expect(s).toBeDefined();
+    expect(s!.title).toBe('Untitled Session');
+    expect(s!.lastMessage).toBeUndefined();
+    expect(displayTitle(s!)).toMatch(/^Untitled · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+
+  it('gives a read session a timestamp label when nothing titleable exists', () => {
+    const reader = new ClaudeReader(CLAUDE_PROJECTS);
+    expect(reader.readSession('claude-blank').title).toMatch(/^Untitled · /);
+    expect(reader.readSession('claude-noisy').title).toBe('Fix the session list titles');
   });
 
   it('reads a session', () => {
