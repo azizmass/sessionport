@@ -60,7 +60,7 @@ jobs:
       - name: Test
         run: npm test
 
-      # Auth comes from npm trusted publishing: this repo + publish.yml are
+      # Auth comes from npm trusted publishing: this repo + publish-npm-package.yml are
       # registered as a trusted publisher on npmjs.com, and the id-token
       # permission above lets npm exchange the OIDC token for a short-lived
       # publish credential. No NPM_TOKEN secret is involved.

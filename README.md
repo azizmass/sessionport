@@ -213,7 +213,7 @@ Every push to `main` and every pull request runs `.github/workflows/ci.yml`
 (build + tests on Node 20 and 22, plus a `npm pack --dry-run` check of the
 published file list).
 
-Releases are cut by tagging — `.github/workflows/publish.yml` does the rest:
+Releases are cut by tagging — `.github/workflows/publish-npm-package.yml` does the rest:
 
 ```bash
 npm version patch      # or minor / major — commits and tags vX.Y.Z
@@ -234,12 +234,12 @@ token to store or rotate. On npmjs.com, open the package's
 | --- | --- |
 | Organization or user | `azizmass` |
 | Repository | `sessionport` |
-| Workflow filename | `publish.yml` |
+| Workflow filename | `publish-npm-package.yml` |
 | Environment | *(leave empty)* |
 
 The workflow's `id-token: write` permission does the rest. To use an automation
 token instead, add it as the `NPM_TOKEN` secret and restore the `NODE_AUTH_TOKEN`
-env block noted in `publish.yml`.
+env block noted in `publish-npm-package.yml`.
 
 Publishing by hand still works (`npm run build && npm test && npm publish`) and
 requires `npm login`.
