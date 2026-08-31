@@ -1,7 +1,8 @@
 import { Command } from 'commander';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, resolve, dirname } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 import { ClaudeReader } from '../readers/claude.js';
 import { OpenCodeReader } from '../readers/opencode.js';
 import { CodexReader } from '../readers/codex.js';
@@ -19,6 +20,16 @@ import type { ImportResult } from '../importers/types.js';
 import { displayTitle, formatSessionTime } from '../ir/normalize.js';
 import { extractPlans, selectPlans } from '../ir/plan.js';
 import { planSession, renderPlanMarkdown } from '../render/plan.js';
+
+// dist/ mirrors src/, so package.json sits two levels up either way.
+function packageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    return JSON.parse(readFileSync(join(here, '..', '..', 'package.json'), 'utf-8')).version;
+  } catch {
+    return '0.0.0';
+  }
+}
 
 function getReader(source: string): Reader {
   switch (source) {
@@ -300,7 +311,7 @@ export function createProgram(): Command {
   program
     .name('sessionport')
     .description('Port AI coding sessions between tools (Claude Code ⇄ OpenCode ⇄ Codex)')
-    .version('0.1.0');
+    .version(packageVersion());
 
   program
     .command('list')
