@@ -97,8 +97,8 @@ several plans — one per revision — and the final one is used unless `--all` 
 given. Sessions that never used plan mode exit with an error rather than
 exporting an empty document.
 
-The interactive wizard offers the same thing: pick a session that has a plan and
-it asks whether to port the whole session or just the plan.
+The interactive wizard offers the same thing, and asks up front rather than
+after you have picked a session — see below.
 
 ### `sessionport inspect <source> <id>`
 
@@ -136,6 +136,27 @@ sessionport
 ```
 
 Walks you through: source tool → pick a session → export/import mode → target → output.
+
+When the source has sessions that recorded a plan, the wizard asks what you want
+to port before showing the list:
+
+```
+? What do you want to port?
+❯ A whole session
+  Just a plan  (3 of 27 sessions have one)
+```
+
+Choosing a plan narrows the list to just those sessions. Choosing a whole
+session shows everything, with plan-bearing ones marked:
+
+```
+  see the the 2 last commits in the @stai_backend/ please revert th…  2026-08-27 21:46
+  I want to analyze this SpecTraceAi/stai_frontend#466 here, prepar…  2026-08-26 13:14  📋 plan
+```
+
+Detection is a scan of session text the reader has already loaded, so the list
+costs nothing extra to build. It is a Claude Code concept; OpenCode and Codex
+sessions are asked about after the read instead.
 
 ## Modes
 

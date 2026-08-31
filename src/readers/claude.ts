@@ -54,6 +54,11 @@ interface ClaudeContentBlock {
 /** How many lines to scan from each end of a session file when summarising it. */
 const SCAN_LINES = 400;
 
+// A plan is recorded as an ExitPlanMode tool call. Matching the encoded key
+// rather than the bare name keeps sessions that merely mention the tool in
+// prose from being flagged.
+const PLAN_MARKER = /"name"\s*:\s*"(ExitPlanMode|exit_plan_mode)"/;
+
 function parseTimestamp(ts: string): number {
   return new Date(ts).getTime();
 }
@@ -276,7 +281,8 @@ export class ClaudeReader implements Reader {
 
         const sessionId = entry.replace(/\.jsonl$/, '');
         try {
-          const lines = readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+          const raw = readFileSync(filePath, 'utf-8');
+          const lines = raw.split('\n').filter(Boolean);
           // The opening events are usually meta noise (/clear, caveats, hooks),
           // so scan well past them for the first real prompt, and scan the tail
           // for a fallback when the session never had a titleable message.
@@ -308,6 +314,7 @@ export class ClaudeReader implements Reader {
             model,
             path: filePath,
             lastMessage,
+            hasPlan: PLAN_MARKER.test(raw),
           });
         } catch {
           // skip unparseable files

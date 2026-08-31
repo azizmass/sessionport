@@ -66,6 +66,17 @@ describe('ClaudeReader', () => {
     expect(session.model?.id).toBe('claude-opus-5');
   });
 
+  it('flags only the sessions that recorded a plan', () => {
+    const reader = new ClaudeReader(CLAUDE_PROJECTS);
+    const sessions = reader.listSessions();
+    const flagged = sessions.filter((s) => s.hasPlan).map((s) => s.id);
+    expect(flagged).toEqual(['claude-plan']);
+    // Every other fixture must be a definite false, not undefined.
+    for (const s of sessions.filter((s) => s.id !== 'claude-plan')) {
+      expect(s.hasPlan).toBe(false);
+    }
+  });
+
   it('reads from a file path', () => {
     const reader = new ClaudeReader(CLAUDE_PROJECTS);
     const fp = join(CLAUDE_PROJECTS, 'test-project', 'claude-test.jsonl');

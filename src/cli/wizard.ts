@@ -42,11 +42,38 @@ export async function runWizard(): Promise<void> {
     return;
   }
 
+  // The reader flags plans while listing, so the choice can be offered before
+  // picking a session rather than after. Readers that cannot tell leave the
+  // flag undefined, and the question is asked after the read instead.
+  const planCount = sessions.filter((s) => s.hasPlan).length;
+  const want = planCount
+    ? await select<'session' | 'plan'>({
+        message: 'What do you want to port?',
+        loop: false,
+        choices: [
+          { name: 'A whole session', value: 'session' },
+          {
+            name: `Just a plan  (${planCount} of ${sessions.length} sessions have one)`,
+            value: 'plan',
+          },
+        ],
+      })
+    : undefined;
+
+  const pool = want === 'plan' ? sessions.filter((s) => s.hasPlan) : sessions;
+
   const sessionChoice = await select<string>({
-    message: `Select session (${sessions.length} available, use arrows to browse):`,
+    message:
+      want === 'plan'
+        ? `Select a session to take the plan from (${pool.length} available):`
+        : `Select session (${pool.length} available, use arrows to browse):`,
     loop: false,
-    choices: sessions.map((s) => ({
-      name: `${displayTitle(s, 65).padEnd(67)} ${formatSessionTime(s.updatedAt || s.createdAt)}${s.model ? ' [' + s.model + ']' : ''}`,
+    choices: pool.map((s) => ({
+      name:
+        `${displayTitle(s, 65).padEnd(67)} ${formatSessionTime(s.updatedAt || s.createdAt)}` +
+        `${s.model ? ' [' + s.model + ']' : ''}` +
+        // Redundant once the list is already filtered down to plans.
+        `${s.hasPlan && want !== 'plan' ? '  \u{1F4CB} plan' : ''}`,
       value: s.id,
     })),
     pageSize: 10,
@@ -56,23 +83,28 @@ export async function runWizard(): Promise<void> {
   const sourceSession = reader.readSession(sessionChoice);
   const plans = extractPlans(sourceSession);
 
-  // Plans only exist for sessions where plan mode was used, so the question is
-  // only worth asking when there is one to port.
-  const what = plans.length
-    ? await select<'session' | 'plan'>({
-        message: 'What do you want to port?',
-        loop: false,
-        choices: [
-          { name: 'The whole session', value: 'session' },
-          {
-            name: `Just the plan${plans.length > 1 ? ` (${plans.length} revisions)` : ''}`,
-            value: 'plan',
-          },
-        ],
-      })
-    : 'session';
+  let what: 'session' | 'plan' = want ?? 'session';
+
+  if (want === undefined && plans.length) {
+    // No listing-level detection for this source, so ask now that we know.
+    what = await select<'session' | 'plan'>({
+      message: 'What do you want to port?',
+      loop: false,
+      choices: [
+        { name: 'The whole session', value: 'session' },
+        {
+          name: `Just the plan${plans.length > 1 ? ` (${plans.length} revisions)` : ''}`,
+          value: 'plan',
+        },
+      ],
+    });
+  }
 
   if (what === 'plan') {
+    if (!plans.length) {
+      console.log('That session turned out not to carry a readable plan.');
+      return;
+    }
     await doPlan(sourceSession, plans);
     return;
   }
