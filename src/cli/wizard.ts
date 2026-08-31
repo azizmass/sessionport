@@ -20,6 +20,7 @@ import { planSession, renderPlanMarkdown } from '../render/plan.js';
 export async function runWizard(): Promise<void> {
   const sourceVal = await select<string>({
     message: 'Select source tool:',
+    loop: false,
     choices: [
       { name: 'Claude Code', value: 'claude' },
       { name: 'OpenCode', value: 'opencode' },
@@ -43,6 +44,7 @@ export async function runWizard(): Promise<void> {
 
   const sessionChoice = await select<string>({
     message: `Select session (${sessions.length} available, use arrows to browse):`,
+    loop: false,
     choices: sessions.map((s) => ({
       name: `${displayTitle(s, 65).padEnd(67)} ${formatSessionTime(s.updatedAt || s.createdAt)}${s.model ? ' [' + s.model + ']' : ''}`,
       value: s.id,
@@ -59,6 +61,7 @@ export async function runWizard(): Promise<void> {
   const what = plans.length
     ? await select<'session' | 'plan'>({
         message: 'What do you want to port?',
+        loop: false,
         choices: [
           { name: 'The whole session', value: 'session' },
           {
@@ -76,6 +79,7 @@ export async function runWizard(): Promise<void> {
 
   const mode = await select<'as-is' | 'compacted'>({
     message: 'Export mode:',
+    loop: false,
     choices: [
       { name: 'As-is (full conversation history)', value: 'as-is' },
       { name: 'Compacted (summarized tool calls/outputs, trimmed reasoning)', value: 'compacted' },
@@ -84,6 +88,7 @@ export async function runWizard(): Promise<void> {
 
   const target = await select<string>({
     message: 'Target:',
+    loop: false,
     choices: [
       { name: '📥 Import into Claude Code', value: 'import-claude' },
       { name: '📥 Import into OpenCode', value: 'import-opencode' },
@@ -129,6 +134,7 @@ async function doPlan(
 
   const target = await select<string>({
     message: 'Send the plan to:',
+    loop: false,
     choices: [
       { name: '📥 OpenCode', value: 'opencode' },
       { name: '📥 Claude Code', value: 'claude' },
