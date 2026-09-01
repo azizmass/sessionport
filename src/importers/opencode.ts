@@ -276,6 +276,11 @@ export class OpenCodeImporter implements Importer {
       const dirPath = cwd;
       const relPath = cwd.replace(/^\//, '');
 
+      // Plan exports belong on the plan agent; a ported conversation belongs on
+      // the working one. Forcing everything onto 'plan' left every imported
+      // session read-only, unable to edit files when it was picked up again.
+      const agent = session.metadata?.plan ? 'plan' : 'build';
+
       const insertAll = db.transaction(() => {
         let seq = 0;
         const events: EventRow[] = [];
@@ -299,7 +304,7 @@ export class OpenCodeImporter implements Importer {
             cache: { read: totalTokens.cacheRead, write: totalTokens.cacheWrite },
           },
           title: session.title,
-          agent: 'plan',
+          agent,
           model: variant ? { id: modelID, providerID, variant } : { id: modelID, providerID },
           version,
           time: { created: tsCreatedInfo, updated: ts },
@@ -337,7 +342,7 @@ export class OpenCodeImporter implements Importer {
         insertSession.run(
           sid, 'global', null, null, slug, dirPath,
           relPath, session.title, version, modelJson,
-          'plan', tsCreated, tsUpdated,
+          agent, tsCreated, tsUpdated,
           0, totalTokens.input, totalTokens.output,
           totalTokens.reasoning, totalTokens.cacheRead, totalTokens.cacheWrite,
           0, 0, 0,
@@ -375,8 +380,8 @@ export class OpenCodeImporter implements Importer {
           if (msgRole === 'assistant') {
             // parentID, path, cost and tokens are all required on an assistant message.
             msgInfo.parentID = lastUserMsgId || mid;
-            msgInfo.mode = 'plan';
-            msgInfo.agent = 'plan';
+            msgInfo.mode = agent;
+            msgInfo.agent = agent;
             msgInfo.modelID = modelID;
             msgInfo.providerID = providerID;
             if (variant) msgInfo.variant = variant;
@@ -386,7 +391,7 @@ export class OpenCodeImporter implements Importer {
             msgInfo.tokens = tokens;
             msgInfo.finish = mapFinishReason(msg.finishReason) ?? 'stop';
           } else {
-            msgInfo.agent = 'plan';
+            msgInfo.agent = agent;
             msgInfo.model = variant ? { providerID, modelID, variant } : { providerID, modelID };
             msgInfo.summary = { diffs: [] };
             lastUserMsgId = mid;

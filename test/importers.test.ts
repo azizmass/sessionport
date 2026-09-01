@@ -436,6 +436,18 @@ describe('OpenCodeImporter', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('leaves a ported conversation on the working agent', () => {
+    const dbPath = createTestDb();
+    const result = new OpenCodeImporter(dbPath).importSession(makeMinimalSession());
+    const db = new Database(dbPath);
+    const row = db.prepare('SELECT agent FROM session WHERE id = ?').get(result.sessionId) as {
+      agent: string;
+    };
+    // 'plan' is read-only in OpenCode; a resumed session must be able to edit.
+    expect(row.agent).toBe('build');
+    db.close();
+  });
+
   it('imports a plan-only session that opencode can open in plan mode', () => {
     const dbPath = createTestDb();
     const source = new ClaudeReader(
@@ -452,6 +464,7 @@ describe('OpenCodeImporter', () => {
       .prepare('SELECT title, agent FROM session WHERE id = ?')
       .get(result.sessionId) as { title: string; agent: string };
     expect(row.title).toBe('Refactor auth, take two');
+    // Only plan exports get the plan agent.
     expect(row.agent).toBe('plan');
 
     const parts = db
@@ -744,7 +757,8 @@ describe('OpenCodeImporter', () => {
 
     const firstMsg = JSON.parse(msgEvents[0].data);
     expect(firstMsg.info.role).toBe('user');
-    expect(firstMsg.info.agent).toBe('plan');
+    // A ported conversation lands on the working agent, not the read-only one.
+    expect(firstMsg.info.agent).toBe('build');
 
     const partEvents = db.prepare("SELECT data FROM event WHERE aggregate_id = ? AND type = 'message.part.updated.1' ORDER BY seq ASC").all(result.sessionId) as { data: string }[];
     expect(partEvents.length).toBe(9);
