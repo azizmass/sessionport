@@ -2,17 +2,9 @@
 
 **Port AI coding sessions between tools** — Claude Code ↔ OpenCode ↔ Codex.
 
-Export, import, compact, list, inspect, and migrate sessions. Works as a CLI or as a
-programmatic TypeScript library.
-
-```
-npx sessionport                  # interactive wizard
-sp list claude                   # shorthand alias
-sessionport export claude <id> --to markdown --mode compacted
-sessionport import claude <id> opencode
-sessionport plan claude <id> --to opencode
-sessionport inspect opencode <id> --mode compacted
-```
+Move a whole conversation, or just the plan you worked out, from one tool to
+another — keeping the messages, tool calls, reasoning, timestamps and working
+directory intact instead of flattening it all into a pasted transcript.
 
 ## Install
 
@@ -20,13 +12,92 @@ sessionport inspect opencode <id> --mode compacted
 npm install -g sessionport
 ```
 
-Or without installing:
+Or run it without installing anything:
 
 ```bash
-npx sessionport list claude
+npx sessionport
 ```
 
-## CLI Commands
+## Using it
+
+**Run it with no arguments.** That is the main way to use sessionport — it walks
+you through the whole thing with arrow keys, and you never have to look up a
+session ID.
+
+```bash
+sessionport
+```
+
+**1. Where are you coming from?**
+
+```
+? Select source tool: (Use arrow keys)
+❯ Claude Code
+  OpenCode
+  Codex
+```
+
+**2. A whole session, or just a plan?**
+
+This question only appears when the source actually has sessions that recorded a
+plan, so it stays out of the way the rest of the time.
+
+```
+? What do you want to port?
+❯ A whole session
+  Just a plan  (3 of 27 sessions have one)
+```
+
+Picking the plan narrows the next list down to just those sessions.
+
+**3. Pick the session.**
+
+Sessions are listed newest first, by name, with the ones carrying a plan marked.
+Sessions that never got a name fall back to their last message, and then to the
+time they were last touched — so every row says something useful.
+
+```
+? Select session (27 available, use arrows to browse):
+❯ Listed display without title                                 2026-09-01 14:12 [claude-opus-5]
+  PR #347 analysis                                             2026-09-01 13:14 [claude-opus-5]
+  stai_backend #353 review                                     2026-08-31 20:35 [claude-opus-5]
+  First chapter review                                         2026-08-30 14:35 [claude-opus-5]
+  Untitled · 2026-08-27 10:35                                  2026-08-27 10:35
+  SpecTraceAi/stai_frontend#466 development plan               2026-08-26 13:14 [claude-opus-5]  📋 plan
+(Use arrow keys to reveal more choices)
+```
+
+**4. How much of it do you want?**
+
+```
+? Export mode: (Use arrow keys)
+❯ As-is (full conversation history)
+  Compacted (summarized tool calls/outputs, trimmed reasoning)
+```
+
+**5. Where is it going?**
+
+Import writes straight into the other tool, ready to open. Export writes a file.
+
+```
+? Target:
+❯ 📥 Import into Claude Code
+  📥 Import into OpenCode
+  📥 Import into Codex
+  ───── Export to file ─────
+  📄 Portable JSON (.session.json)
+  📄 Readable markdown (.md)
+  🌱 Seed prompt for OpenCode
+  🌱 Seed prompt for Claude Code
+  🌱 Seed prompt for Codex
+  🌱 Seed prompt (generic)
+```
+
+That is the whole flow. `sp` is a shorter alias for the same command.
+
+## CLI commands
+
+Every step above has a non-interactive equivalent, for scripts, aliases and CI.
 
 ### `sessionport list <source>`
 
@@ -97,8 +168,8 @@ several plans — one per revision — and the final one is used unless `--all` 
 given. Sessions that never used plan mode exit with an error rather than
 exporting an empty document.
 
-The interactive wizard offers the same thing, and asks up front rather than
-after you have picked a session — see below.
+Running `sessionport` with no arguments offers the same thing as step 2 of the
+walkthrough above, and finds the plan-bearing sessions for you.
 
 ### `sessionport inspect <source> <id>`
 
@@ -126,37 +197,6 @@ Remove orphaned sessions from OpenCode (sessions with no event history).
 sessionport cleanup opencode          # delete all orphans
 sessionport cleanup opencode --dry-run  # list without deleting
 ```
-
-### Interactive wizard
-
-Run with no arguments to launch the interactive prompt:
-
-```bash
-sessionport
-```
-
-Walks you through: source tool → pick a session → export/import mode → target → output.
-
-When the source has sessions that recorded a plan, the wizard asks what you want
-to port before showing the list:
-
-```
-? What do you want to port?
-❯ A whole session
-  Just a plan  (3 of 27 sessions have one)
-```
-
-Choosing a plan narrows the list to just those sessions. Choosing a whole
-session shows everything, with plan-bearing ones marked:
-
-```
-  see the the 2 last commits in the @stai_backend/ please revert th…  2026-08-27 21:46
-  I want to analyze this SpecTraceAi/stai_frontend#466 here, prepar…  2026-08-26 13:14  📋 plan
-```
-
-Detection is a scan of session text the reader has already loaded, so the list
-costs nothing extra to build. It is a Claude Code concept; OpenCode and Codex
-sessions are asked about after the read instead.
 
 ## Modes
 
