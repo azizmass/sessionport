@@ -6,6 +6,9 @@ Move a whole conversation, or just the plan you worked out, from one tool to
 another — keeping the messages, tool calls, reasoning, timestamps and working
 directory intact instead of flattening it all into a pasted transcript.
 
+<!-- absolute so it renders on npmjs.com too, where docs/ is not published -->
+![sessionport in action](https://raw.githubusercontent.com/azizmass/sessionport/main/docs/demo.gif)
+
 ## Install
 
 ```bash
