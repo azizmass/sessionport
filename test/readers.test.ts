@@ -66,6 +66,14 @@ describe('ClaudeReader', () => {
     expect(session.model?.id).toBe('claude-opus-5');
   });
 
+  it('prefers the name Claude gave the session over its first prompt', () => {
+    const reader = new ClaudeReader(CLAUDE_PROJECTS);
+    const titled = reader.listSessions().find((s) => s.id === 'claude-titled');
+    expect(titled?.title).toBe('Refactor the billing adapter');
+    // The first prompt is what it would otherwise have fallen back to.
+    expect(reader.readSession('claude-titled').title).toBe('Refactor the billing adapter');
+  });
+
   it('flags only the sessions that recorded a plan', () => {
     const reader = new ClaudeReader(CLAUDE_PROJECTS);
     const sessions = reader.listSessions();

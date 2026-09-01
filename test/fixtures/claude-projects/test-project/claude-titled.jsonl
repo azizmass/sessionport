@@ -1,0 +1,4 @@
+{"type": "mode", "mode": "normal", "sessionId": "claude-titled"}
+{"type": "ai-title", "aiTitle": "Refactor the billing adapter", "sessionId": "claude-titled"}
+{"type": "user", "uuid": "u1", "parentUuid": null, "sessionId": "claude-titled", "timestamp": "2026-02-03T08:15:00.000Z", "cwd": "/test/project", "userType": "external", "isSidechain": false, "message": {"role": "user", "content": "ok so the billing thing is broken again, can you look at it"}}
+{"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": "claude-titled", "timestamp": "2026-02-03T08:15:09.000Z", "cwd": "/test/project", "userType": "external", "isSidechain": false, "message": {"role": "assistant", "content": [{"type": "text", "text": "Looking now."}], "model": "claude-opus-5"}}

@@ -32,6 +32,8 @@ interface ClaudeEvent {
   userType?: string;
   entrypoint?: string;
   isMeta?: boolean;
+  /** Claude's own name for the session, written as an `ai-title` event. */
+  aiTitle?: string;
   isSidechain?: boolean;
   content?: string;
   [key: string]: unknown;
@@ -108,6 +110,15 @@ function contentBlockToPart(block: ClaudeContentBlock): PartIR | null {
 }
 
 function extractTitle(events: ClaudeEvent[]): string {
+  // Claude names its own sessions with an ai-title event, which beats
+  // guessing from the first prompt. Later ones supersede earlier ones.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === 'ai-title' && typeof e.aiTitle === 'string') {
+      const cleaned = normalize_cleanTitle(e.aiTitle);
+      if (cleaned !== UNTITLED) return cleaned;
+    }
+  }
   for (const e of events) {
     if (e.type === 'user' && !e.isMeta && e.message) {
       const cleaned = normalize_cleanTitle(extractText(e.message.content));
