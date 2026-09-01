@@ -1,6 +1,6 @@
 {
   "name": "sessionport",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Port AI coding sessions between tools — Claude Code ↔ OpenCode ↔ Codex. Export, import, compact, and migrate sessions with full fidelity.",
   "author": "Masmoudi Aziz <azizmasmoudi019@gmail.com>",
   "type": "module",
