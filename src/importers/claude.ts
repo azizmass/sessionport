@@ -1,9 +1,35 @@
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 import type { SessionIR, MessageIR, PartIR, ToolCallPart, ToolResultPart } from '../ir/types.js';
 import type { Importer, ImportResult } from './types.js';
 import { claudeSessionId, claudeUuid, claudeProjectSlug } from './ids.js';
+
+// Claude stamps every event with the branch it was recorded on. A ported
+// session did not happen here, but the directory it refers to usually exists,
+// so the current branch is the closest honest answer.
+function currentBranch(cwd: string): string | undefined {
+  try {
+    const out = execFileSync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out && out !== 'HEAD' ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isoOr(ts: number | undefined, fallback: string): string {
+  if (!ts) return fallback;
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? fallback : d.toISOString();
+}
+
+// Claude records the CLI version that wrote each event; a ported session
+// claims a recent one so the reader does not treat it as ancient.
+const CLAUDE_VERSION = '2.1.250';
 
 interface ToolPair {
   call: ToolCallPart;
@@ -74,9 +100,18 @@ export class ClaudeImporter implements Importer {
     const lines: string[] = [];
     const msgIds: string[] = [];
     const now = new Date().toISOString();
+    const sessionStart = isoOr(session.createdAt, now);
+
+    const gitBranch = currentBranch(cwd);
+    const version = CLAUDE_VERSION;
 
     lines.push(JSON.stringify({ type: 'mode', mode: 'normal', sessionId }));
     lines.push(JSON.stringify({ type: 'permission-mode', permissionMode: 'default', sessionId }));
+    // Without this Claude labels the resumed session with its first message,
+    // which for a ported session is rarely the title it already had.
+    if (session.title && session.title.trim()) {
+      lines.push(JSON.stringify({ type: 'ai-title', aiTitle: session.title.trim(), sessionId }));
+    }
 
     let prevUuid = '';
 
@@ -87,6 +122,20 @@ export class ClaudeImporter implements Importer {
       const { nonTool, pairs } = pairTools(msg.parts);
       const uuid = claudeUuid();
       msgIds.push(uuid);
+      const timestamp = isoOr(msg.timestamp, sessionStart);
+      // Claude writes these on every conversation event; omitting them left
+      // ported sessions subtly different from native ones.
+      const common = {
+        sessionId,
+        session_id: sessionId,
+        timestamp,
+        cwd,
+        userType: 'external',
+        entrypoint: 'cli',
+        version,
+        isSidechain: false,
+        ...(gitBranch ? { gitBranch } : {}),
+      };
 
       if (msg.role === 'user') {
         const contentBlocks: unknown[] = [...partToClaudeBlocks(nonTool)];
@@ -105,13 +154,10 @@ export class ClaudeImporter implements Importer {
         const userEvent: Record<string, unknown> = {
           type: 'user',
           uuid,
-          parentUuid: prevUuid || undefined,
-          sessionId,
-          timestamp: now,
-          cwd,
-          userType: 'external',
-          entrypoint: 'cli',
-          version: '2.1.220',
+          // Explicit null, not a dropped key: the first message is the root.
+          parentUuid: prevUuid || null,
+          ...common,
+          permissionMode: 'default',
         };
 
         if (contentBlocks.length > 0) {
@@ -141,12 +187,11 @@ export class ClaudeImporter implements Importer {
         const assistantEvent: Record<string, unknown> = {
           type: 'assistant',
           uuid,
-          parentUuid: prevUuid || undefined,
-          sessionId,
-          timestamp: now,
-          cwd,
-          entrypoint: 'cli',
+          parentUuid: prevUuid || null,
+          ...common,
           message: {
+            id: msg.id || uuid,
+            type: 'message',
             role: 'assistant',
             content: contentBlocks,
             model: session.model ? `${session.model.provider}/${session.model.id}` : 'unknown',
@@ -155,12 +200,44 @@ export class ClaudeImporter implements Importer {
               output_tokens: msg.tokens?.output || 0,
             },
             stop_reason: pairs.length > 0 ? 'tool_use' : (msg.finishReason || 'end_turn'),
+            stop_sequence: null,
           },
         };
 
         lines.push(JSON.stringify(assistantEvent));
         prevUuid = uuid;
+
+        // Claude carries tool results in the user turn after the call, but
+        // OpenCode packs them into the same assistant message. Without this
+        // split they were written nowhere and the outputs were lost.
+        const results = pairs.filter((p) => p.result);
+        if (results.length > 0) {
+          const resultUuid = claudeUuid();
+          lines.push(
+            JSON.stringify({
+              type: 'user',
+              uuid: resultUuid,
+              parentUuid: uuid,
+              ...common,
+              message: {
+                role: 'user',
+                content: results.map((p) => ({
+                  type: 'tool_result',
+                  tool_use_id: p.result!.toolCallId,
+                  content: p.result!.content,
+                  is_error: p.result!.isError || false,
+                })),
+              },
+            }),
+          );
+          prevUuid = resultUuid;
+        }
       }
+    }
+
+    // The leaf Claude continues from when the session is resumed.
+    if (prevUuid) {
+      lines.push(JSON.stringify({ type: 'last-prompt', leafUuid: prevUuid, sessionId }));
     }
 
     writeFileSync(filePath, lines.join('\n') + '\n', 'utf-8');

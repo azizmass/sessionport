@@ -212,6 +212,125 @@ describe('ClaudeImporter', () => {
     expect(toolUse.name).toBe('execute_command');
   });
 
+  it('keeps each message at its own time rather than the import time', () => {
+    const base = Date.UTC(2026, 0, 15, 9, 30, 0);
+    const session = makeMinimalSession({ createdAt: base });
+    session.messages.forEach((m, i) => {
+      m.timestamp = base + i * 60_000;
+    });
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const events = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.type === 'user' || e.type === 'assistant');
+
+    const stamps = events.map((e) => e.timestamp);
+    expect(new Set(stamps).size).toBe(stamps.length);
+    expect(stamps[0]).toBe(new Date(base).toISOString());
+    expect(stamps).toEqual([...stamps].sort());
+  });
+
+  it('falls back to the session start for messages with no time of their own', () => {
+    const base = Date.UTC(2026, 0, 15, 9, 30, 0);
+    const session = makeMinimalSession({ createdAt: base });
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const first = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .find((e) => e.type === 'user');
+    expect(first.timestamp).toBe(new Date(base).toISOString());
+  });
+
+  it('carries the session title over as an ai-title event', () => {
+    const session = makeMinimalSession({ title: 'Ported session name' });
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const events = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    const title = events.find((e) => e.type === 'ai-title');
+    expect(title).toBeDefined();
+    expect(title.aiTitle).toBe('Ported session name');
+    expect(title.sessionId).toBe(result.sessionId);
+  });
+
+  it('writes the fields Claude puts on every conversation event', () => {
+    const session = makeMinimalSession();
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const events = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.type === 'user' || e.type === 'assistant');
+
+    for (const e of events) {
+      expect(e.isSidechain).toBe(false);
+      expect(e.userType).toBe('external');
+      expect(e.session_id).toBe(result.sessionId);
+      expect(e.version).toMatch(/^\d+\.\d+\.\d+$/);
+    }
+    // Explicit null, not an absent key: the first message is the root.
+    expect(events[0].parentUuid).toBeNull();
+    expect('parentUuid' in events[0]).toBe(true);
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i].parentUuid).toBe(events[i - 1].uuid);
+    }
+  });
+
+  it('keeps tool results that arrived in the assistant message', () => {
+    // OpenCode packs the call and its result into one assistant message;
+    // Claude expects the result in the user turn that follows.
+    const session = makeMinimalSession({
+      messages: [
+        {
+          id: 'm1',
+          role: 'assistant',
+          timestamp: Date.now(),
+          parts: [
+            { kind: 'tool_call', id: 'toolu_x1', name: 'read_file', input: { path: 'a.ts' } },
+            { kind: 'tool_result', toolCallId: 'toolu_x1', content: 'file body', isError: false },
+          ],
+        },
+      ],
+    } as Partial<SessionIR>);
+
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const events = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+
+    const assistant = events.find((e) => e.type === 'assistant');
+    expect(assistant.message.content.some((c: { type: string }) => c.type === 'tool_use')).toBe(true);
+
+    const carrier = events.find(
+      (e) =>
+        e.type === 'user' &&
+        Array.isArray(e.message?.content) &&
+        e.message.content.some((c: { type: string }) => c.type === 'tool_result'),
+    );
+    expect(carrier).toBeDefined();
+    expect(carrier.parentUuid).toBe(assistant.uuid);
+    const block = carrier.message.content[0];
+    expect(block.tool_use_id).toBe('toolu_x1');
+    expect(block.content).toBe('file body');
+    expect(block.is_error).toBe(false);
+  });
+
+  it('anchors resume at the final message', () => {
+    const session = makeMinimalSession();
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const events = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    const conv = events.filter((e) => e.type === 'user' || e.type === 'assistant');
+    const anchor = events.find((e) => e.type === 'last-prompt');
+    expect(anchor.leafUuid).toBe(conv[conv.length - 1].uuid);
+  });
+
   it('writes sessionId in every event', () => {
     const session = makeMinimalSession();
     const importer = new ClaudeImporter(tmpDir);
