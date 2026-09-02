@@ -5,7 +5,7 @@ import { homedir } from 'os';
 import type { SessionIR, MessageIR, PartIR, ToolCallPart, ToolResultPart } from '../ir/types.js';
 import type { Importer, ImportResult } from './types.js';
 import { claudeSessionId, claudeUuid, claudeProjectSlug } from './ids.js';
-import { translateToolCall } from './tools.js';
+import { translateToolCall, toolInput } from './tools.js';
 
 // Claude stamps every event with the branch it was recorded on. A ported
 // session did not happen here, but the directory it refers to usually exists,
@@ -181,7 +181,7 @@ export class ClaudeImporter implements Importer {
             type: 'tool_use',
             id: pair.call.id,
             name: translated.name,
-            input: translated.input,
+            input: toolInput(translated.input),
             caller: { type: 'direct' },
           });
         }

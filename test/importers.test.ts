@@ -382,6 +382,7 @@ describe('CodexImporter', () => {
     expect(idx.id).toBe(result.sessionId);
     expect(idx.thread_name).toBe('Test Import Session');
   });
+
 });
 
 
@@ -888,6 +889,37 @@ describe('tool vocabulary translation', () => {
       .flatMap((e) => (e.message?.content ?? []) as { type: string; name?: string; input?: Record<string, unknown> }[])
       .filter((b) => b.type === 'tool_use');
   }
+
+  it('always hands Claude a tool input it will accept', () => {
+    // Codex writes its `exec` input as a bare code string. Passed straight through,
+    // Claude refused the whole session on resume:
+    //   400 messages.1.content.1.tool_use.input: Input should be an object
+    const blocks = claudeToolBlocks(
+      makeMinimalSession({
+        sourceTool: 'codex' as const,
+        messages: [
+          { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'run it' }] },
+          {
+            role: 'assistant' as const,
+            parts: [
+              { kind: 'tool_call' as const, id: 'call_1', name: 'exec', input: 'await tools.exec_command({})' },
+              { kind: 'tool_call' as const, id: 'call_2', name: 'exec', input: '{"cmd":"ls"}' },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(blocks).toHaveLength(2);
+    for (const b of blocks) {
+      expect(typeof b.input).toBe('object');
+      expect(Array.isArray(b.input)).toBe(false);
+    }
+    // A string that is not JSON is kept whole rather than dropped…
+    expect(blocks[0].input).toEqual({ input: 'await tools.exec_command({})' });
+    // …and one that is arrives parsed.
+    expect(blocks[1].input).toEqual({ cmd: 'ls' });
+  });
 
   it('renames Claude tools and arguments to the OpenCode spelling', () => {
     const parts = openCodeToolParts(claudeToolSession());

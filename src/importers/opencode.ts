@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import type { SessionIR, PartIR, ToolCallPart, ToolResultPart } from '../ir/types.js';
 import type { Importer, ImportResult } from './types.js';
 import { opencodeSessionId, opencodeMessageId, opencodePartId, opencodeEventId, opencodeSlug } from './ids.js';
-import { translateToolCall } from './tools.js';
+import { translateToolCall, toolInput } from './tools.js';
 
 interface ToolPair {
   call: ToolCallPart;
@@ -58,29 +58,6 @@ const FINISH_REASONS: Record<string, string> = {
 function mapFinishReason(reason: string | undefined): string | undefined {
   if (!reason) return undefined;
   return FINISH_REASONS[reason] ?? FINISH_REASONS[reason.toLowerCase()] ?? 'other';
-}
-
-/** OpenCode's ToolState requires `input` to be an object, never a string. */
-function toolInput(raw: unknown): Record<string, unknown> {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    return raw as Record<string, unknown>;
-  }
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (trimmed.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return parsed as Record<string, unknown>;
-        }
-      } catch {
-        // fall through to the wrapped form
-      }
-    }
-    return trimmed.length > 0 ? { input: raw } : {};
-  }
-  if (raw === undefined || raw === null) return {};
-  return { input: raw };
 }
 
 function toolTitle(name: string, input: Record<string, unknown>): string {

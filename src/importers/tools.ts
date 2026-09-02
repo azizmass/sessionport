@@ -104,3 +104,31 @@ export function translateToolCall(name: string, input: unknown, target: ToolVoca
 export function translateToolName(name: string, target: ToolVocabulary): string {
   return translateToolCall(name, undefined, target).name;
 }
+
+/**
+ * Both Claude and OpenCode require a tool call's input to be a keyed object — Claude
+ * rejects the whole session with `tool_use.input: Input should be an object` — while
+ * Codex writes its `exec` input as a bare code string. A JSON object arrives parsed;
+ * anything else is wrapped rather than dropped.
+ */
+export function toolInput(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        // fall through to the wrapped form
+      }
+    }
+    return trimmed.length > 0 ? { input: raw } : {};
+  }
+  if (raw === undefined || raw === null) return {};
+  return { input: raw };
+}
