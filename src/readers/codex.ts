@@ -28,12 +28,27 @@ interface CodexEvent {
     call_id?: string;
     name?: string;
     input?: string;
-    output?: { type: string; text: string }[];
+    output?: { type: string; text: string }[] | string;
     status?: string;
     turn_id?: string;
     [key: string]: unknown;
   };
   [key: string]: unknown;
+}
+
+/**
+ * Codex writes a tool's output either as a list of content blocks or, for a shell
+ * command that produced plain text, as a bare string. Assuming the list shape threw
+ * on the string one and took the whole session read down with it.
+ */
+function toolOutputText(output: unknown): string {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    return output
+      .map((o) => (typeof o === 'string' ? o : ((o as { text?: string })?.text ?? '')))
+      .join('\n');
+  }
+  return '';
 }
 
 function findRolloutFile(sessionId: string, root: string): string | undefined {
@@ -62,7 +77,7 @@ function findRolloutFile(sessionId: string, root: string): string | undefined {
   return undefined;
 }
 
-function parseCodexJsonl(filePath: string, content: string): SessionIR {
+function parseCodexJsonl(filePath: string, content: string, threadName?: string): SessionIR {
   const lines = content.split('\n').filter(Boolean);
   const events: CodexEvent[] = lines.map((l) => JSON.parse(l));
 
@@ -152,10 +167,7 @@ function parseCodexJsonl(filePath: string, content: string): SessionIR {
       }
 
       if (p.type === 'custom_tool_call_output') {
-        const outputText =
-          p.output
-            ?.map((o: { text?: string }) => o.text ?? '')
-            .join('\n') ?? '';
+        const outputText = toolOutputText(p.output);
 
         const resultPart: PartIR = {
           kind: 'tool_result',
@@ -214,7 +226,8 @@ function parseCodexJsonl(filePath: string, content: string): SessionIR {
     sourceTool: 'codex' as SourceTool,
     sourcePath: filePath,
     title: displayTitle({
-      title: titleFromEvents,
+      // The name Codex gave the thread beats anything guessed from the transcript.
+      title: threadName || titleFromEvents,
       lastMessage,
       updatedAt: timestamps[timestamps.length - 1],
       createdAt: timestamps[0],
@@ -269,11 +282,21 @@ export class CodexReader implements Reader {
     if (!rolloutPath) {
       throw new Error(`Codex session not found: ${id}`);
     }
-    return this.readFromFile(rolloutPath);
+    const content = readFileSync(rolloutPath, 'utf-8');
+    return parseCodexJsonl(rolloutPath, content, this.threadName(id));
   }
 
   readFromFile(filePath: string): SessionIR {
     const content = readFileSync(filePath, 'utf-8');
     return parseCodexJsonl(filePath, content);
+  }
+
+  /**
+   * A Codex thread's name lives in the index, not in the rollout file, so reading a
+   * session by id has to go and fetch it. Without it a ported session is titled by
+   * whatever its opening message happened to say.
+   */
+  private threadName(id: string): string | undefined {
+    return this.listSessions().find((s) => s.id === id)?.title || undefined;
   }
 }

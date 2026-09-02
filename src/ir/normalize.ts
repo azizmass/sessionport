@@ -51,6 +51,11 @@ export function extractText(content: unknown): string {
 }
 
 export function cleanTitle(raw: string, maxLen = 80): string {
+  // The wrapper test has to run on the raw text: stripXml removes the very tags
+  // isSystemCommand looks for, so checking afterwards lets a block like
+  // <environment_context> through as its own flattened contents — which is how
+  // ported Codex sessions ended up titled with a cwd, a shell and a timezone.
+  if (isSystemCommand(raw)) return UNTITLED;
   const cleaned = stripXml(raw);
   if (!cleaned || isSystemCommand(cleaned)) return UNTITLED;
   return cleaned.length > maxLen ? cleaned.slice(0, maxLen) + '…' : cleaned;

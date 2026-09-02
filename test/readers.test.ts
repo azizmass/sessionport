@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { join } from 'path';
-import { unlinkSync, existsSync } from 'fs';
+import { unlinkSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 import { ClaudeReader } from '../src/readers/claude.js';
 import { CodexReader } from '../src/readers/codex.js';
 import { OpenCodeReader } from '../src/readers/opencode.js';
@@ -106,6 +108,96 @@ describe('CodexReader', () => {
     expect(session.messages[0].parts.some((p) => p.kind === 'reasoning')).toBe(true);
     expect(session.messages[1].parts.some((p) => p.kind === 'tool_call')).toBe(true);
     expect(session.model?.provider).toBe('openai');
+  });
+
+  it('reads a tool output written as a bare string', () => {
+    const dir = join(tmpdir(), 'sessionport-codex-' + randomUUID().slice(0, 8));
+    mkdirSync(dir, { recursive: true });
+    const fp = join(dir, 'rollout.jsonl');
+    // Codex writes a shell tool's output as a list of blocks most of the time and
+    // as a plain string sometimes; assuming the list shape threw on the string one.
+    writeFileSync(
+      fp,
+      [
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:02.242Z',
+          type: 'session_meta',
+          payload: { session_id: 'codex-str-001', cwd: '/tmp', model_provider: 'openai' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:20.219Z',
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'run it' }] },
+        }),
+        JSON.stringify({
+          timestamp: '2026-07-25T09:14:01.000Z',
+          type: 'response_item',
+          payload: { type: 'custom_tool_call', call_id: 'call-1', name: 'exec', input: 'ls' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-07-25T09:14:02.000Z',
+          type: 'response_item',
+          payload: { type: 'custom_tool_call_output', call_id: 'call-1', output: 'Wall time 11.0 seconds\nOutput:\n' },
+        }),
+      ].join('\n'),
+    );
+
+    const session = new CodexReader(dir).readFromFile(fp);
+    const result = session.messages.flatMap((m) => m.parts).find((p) => p.kind === 'tool_result');
+    expect(result).toBeDefined();
+    expect((result as { content: string }).content).toContain('Wall time 11.0 seconds');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('titles a session by the name Codex gave the thread', () => {
+    const dir = join(tmpdir(), 'sessionport-codex-' + randomUUID().slice(0, 8));
+    mkdirSync(join(dir, 'sessions', '2026', '07', '25'), { recursive: true });
+    const rollout = join(dir, 'sessions', '2026', '07', '25', 'rollout-2026-07-25T09-13-02-codex-named-001.jsonl');
+    writeFileSync(
+      rollout,
+      [
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:02.242Z',
+          type: 'session_meta',
+          payload: { session_id: 'codex-named-001', cwd: '/tmp', model_provider: 'openai' },
+        }),
+        // Codex opens a thread with an environment block. Flattened, it reads as a
+        // cwd, a shell and a timezone — which is what ported sessions were named.
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:20.219Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: '<environment_context>\n <cwd>/tmp</cwd>\n <shell>bash</shell>\n</environment_context>' },
+            ],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:21.000Z',
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'please look at the deploy' }] },
+        }),
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'session_index.jsonl'),
+      JSON.stringify({
+        id: 'codex-named-001',
+        thread_name: 'Verify Kubernetes deployment',
+        updated_at: '2026-07-25T09:20:00.000Z',
+      }),
+    );
+
+    const reader = new CodexReader(dir);
+    expect(reader.readSession('codex-named-001').title).toBe('Verify Kubernetes deployment');
+
+    // Without an indexed name, the environment block must still not become the title.
+    writeFileSync(join(dir, 'session_index.jsonl'), '');
+    expect(new CodexReader(dir).readSession('codex-named-001').title).toBe('please look at the deploy');
+
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

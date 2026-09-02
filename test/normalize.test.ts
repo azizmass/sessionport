@@ -43,6 +43,13 @@ describe('cleanTitle', () => {
     expect(cleanTitle('<command-name>/clear</command-name>')).toBe('Untitled Session');
   });
 
+  it('rejects a wrapper block whose contents are not themselves a command', () => {
+    // The check has to run before the tags are stripped: flattened, this block is
+    // just a cwd and a shell, and it sailed through as a perfectly good title.
+    const env = '<environment_context>\n  <cwd>/home/a/app</cwd>\n  <shell>bash</shell>\n</environment_context>';
+    expect(cleanTitle(env)).toBe('Untitled Session');
+  });
+
   it('returns clean text unchanged', () => {
     expect(cleanTitle('How does auth work?')).toBe('How does auth work?');
   });
