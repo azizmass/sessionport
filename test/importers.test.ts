@@ -504,7 +504,7 @@ describe('OpenCodeImporter', () => {
 
     // 5 content parts + one step-start per assistant message (3).
     const parts = db.prepare('SELECT * FROM part WHERE session_id = ?').all(result.sessionId);
-    expect(parts.length).toBe(9);
+    expect(parts.length).toBe(12);
 
     db.close();
   });
@@ -718,7 +718,7 @@ describe('OpenCodeImporter', () => {
     const types = events.map((e) => e.type);
     expect(types[0]).toBe('session.created.1');
     expect(types.filter((t) => t === 'message.updated.1').length).toBe(5);
-    expect(types.filter((t) => t === 'message.part.updated.1').length).toBe(9);
+    expect(types.filter((t) => t === 'message.part.updated.1').length).toBe(12);
     expect(types[types.length - 1]).toBe('session.updated.1');
 
     const sessionCreated = JSON.parse(events[0].data);
@@ -763,7 +763,7 @@ describe('OpenCodeImporter', () => {
     expect(firstMsg.info.agent).toBe('build');
 
     const partEvents = db.prepare("SELECT data FROM event WHERE aggregate_id = ? AND type = 'message.part.updated.1' ORDER BY seq ASC").all(result.sessionId) as { data: string }[];
-    expect(partEvents.length).toBe(9);
+    expect(partEvents.length).toBe(12);
 
     const firstPart = JSON.parse(partEvents[0].data);
     expect(firstPart.part.type).toBe('text');
@@ -930,4 +930,34 @@ describe('tool vocabulary translation', () => {
     expect(mcp.state.input.some_key).toBe(1);
   });
 
+  it('closes each ported assistant turn with a step-finish carrying its usage', () => {
+    const dbPath = createTestDb();
+    const session = makeMinimalSession({
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Hi' }] },
+        {
+          role: 'assistant' as const,
+          parts: [{ kind: 'text' as const, text: 'Hello' }],
+          tokens: { input: 100, output: 20, reasoning: 5 },
+          finishReason: 'end_turn',
+        },
+      ],
+    });
+    const result = new OpenCodeImporter(dbPath).importSession(session);
+
+    const db = new Database(dbPath);
+    const parts = (db.prepare('SELECT data FROM part WHERE session_id = ?').all(result.sessionId) as { data: string }[])
+      .map((r) => JSON.parse(r.data));
+    const finish = parts.find((p) => p.type === 'step-finish');
+    expect(finish).toBeDefined();
+    expect(finish.reason).toBe('stop');
+    expect(finish.tokens.total).toBe(125);
+    expect(finish.tokens.input).toBe(100);
+
+    const message = (db.prepare('SELECT data FROM message WHERE session_id = ?').all(result.sessionId) as { data: string }[])
+      .map((r) => JSON.parse(r.data))
+      .find((m) => m.role === 'assistant');
+    expect(message.tokens.total).toBe(125);
+    db.close();
+  });
 });

@@ -366,6 +366,11 @@ export class OpenCodeImporter implements Importer {
           const msgRole = msg.role as string;
 
           const tokens = {
+            // OpenCode carries a `total` on every assistant message and reads it back
+            // for the per-message usage display; without it a ported turn shows nothing.
+            total:
+              msg.tokens?.total ||
+              (msg.tokens?.input || 0) + (msg.tokens?.output || 0) + (msg.tokens?.reasoning || 0),
             input: msg.tokens?.input || 0,
             output: msg.tokens?.output || 0,
             reasoning: msg.tokens?.reasoning || 0,
@@ -429,7 +434,7 @@ export class OpenCodeImporter implements Importer {
             });
           };
 
-          // Assistant turns in OpenCode open with a step-start part.
+          // Assistant turns in OpenCode open with a step-start part…
           if (msgRole === 'assistant') emitPart({ type: 'step-start' });
 
           let partSeq = 0;
@@ -439,6 +444,12 @@ export class OpenCodeImporter implements Importer {
             const partTs = messageSeq.next();
             emitPart(partToOpenCodeData(part, callId, partTs, pair), partTs);
             partSeq++;
+          }
+
+          // …and close with a step-finish, which is where OpenCode reads the turn's
+          // usage from. An assistant turn without one reads as still running.
+          if (msgRole === 'assistant') {
+            emitPart({ type: 'step-finish', reason: msgInfo.finish, tokens, cost: 0 });
           }
 
           msgCount++;
