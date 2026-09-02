@@ -384,57 +384,59 @@ describe('CodexImporter', () => {
   });
 });
 
+
+const tmpDir = join(tmpdir(), 'sessionport-test-opencode-' + randomUUID().slice(0, 8));
+
+function createTestDb(): string {
+  rmSync(tmpDir, { recursive: true, force: true });
+  mkdirSync(tmpDir, { recursive: true });
+  const dbPath = join(tmpDir, 'opencode.db');
+  const db = new Database(dbPath);
+  db.exec('PRAGMA journal_mode=WAL');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project (
+      id TEXT PRIMARY KEY
+    );
+    INSERT OR IGNORE INTO project (id) VALUES ('global');
+    CREATE TABLE IF NOT EXISTS session (
+      id TEXT PRIMARY KEY, project_id TEXT REFERENCES project(id),
+      workspace_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, path TEXT,
+      title TEXT, version TEXT, model TEXT, agent TEXT,
+      time_created INTEGER, time_updated INTEGER,
+      cost REAL, tokens_input INTEGER, tokens_output INTEGER,
+      tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER,
+      summary_additions INTEGER, summary_deletions INTEGER, summary_files INTEGER,
+      FOREIGN KEY (project_id) REFERENCES project(id)
+    );
+    CREATE TABLE IF NOT EXISTS message (
+      id TEXT PRIMARY KEY, session_id TEXT REFERENCES session(id),
+      time_created INTEGER, time_updated INTEGER, data TEXT,
+      FOREIGN KEY (session_id) REFERENCES session(id)
+    );
+    CREATE TABLE IF NOT EXISTS part (
+      id TEXT PRIMARY KEY, message_id TEXT REFERENCES message(id),
+      session_id TEXT REFERENCES session(id),
+      time_created INTEGER, time_updated INTEGER, data TEXT,
+      FOREIGN KEY (message_id) REFERENCES message(id),
+      FOREIGN KEY (session_id) REFERENCES session(id)
+    );
+    CREATE TABLE IF NOT EXISTS event (
+      id TEXT PRIMARY KEY, aggregate_id TEXT NOT NULL,
+      seq INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS event_sequence (
+      aggregate_id TEXT PRIMARY KEY, seq INTEGER NOT NULL, owner_id TEXT
+    );
+  `);
+  db.close();
+  return dbPath;
+}
+
+afterAll(() => {
+  rmSync(tmpDir, { recursive: true, force: true });
+});
+
 describe('OpenCodeImporter', () => {
-  const tmpDir = join(tmpdir(), 'sessionport-test-opencode-' + randomUUID().slice(0, 8));
-
-  function createTestDb(): string {
-    rmSync(tmpDir, { recursive: true, force: true });
-    mkdirSync(tmpDir, { recursive: true });
-    const dbPath = join(tmpDir, 'opencode.db');
-    const db = new Database(dbPath);
-    db.exec('PRAGMA journal_mode=WAL');
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS project (
-        id TEXT PRIMARY KEY
-      );
-      INSERT OR IGNORE INTO project (id) VALUES ('global');
-      CREATE TABLE IF NOT EXISTS session (
-        id TEXT PRIMARY KEY, project_id TEXT REFERENCES project(id),
-        workspace_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, path TEXT,
-        title TEXT, version TEXT, model TEXT, agent TEXT,
-        time_created INTEGER, time_updated INTEGER,
-        cost REAL, tokens_input INTEGER, tokens_output INTEGER,
-        tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER,
-        summary_additions INTEGER, summary_deletions INTEGER, summary_files INTEGER,
-        FOREIGN KEY (project_id) REFERENCES project(id)
-      );
-      CREATE TABLE IF NOT EXISTS message (
-        id TEXT PRIMARY KEY, session_id TEXT REFERENCES session(id),
-        time_created INTEGER, time_updated INTEGER, data TEXT,
-        FOREIGN KEY (session_id) REFERENCES session(id)
-      );
-      CREATE TABLE IF NOT EXISTS part (
-        id TEXT PRIMARY KEY, message_id TEXT REFERENCES message(id),
-        session_id TEXT REFERENCES session(id),
-        time_created INTEGER, time_updated INTEGER, data TEXT,
-        FOREIGN KEY (message_id) REFERENCES message(id),
-        FOREIGN KEY (session_id) REFERENCES session(id)
-      );
-      CREATE TABLE IF NOT EXISTS event (
-        id TEXT PRIMARY KEY, aggregate_id TEXT NOT NULL,
-        seq INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS event_sequence (
-        aggregate_id TEXT PRIMARY KEY, seq INTEGER NOT NULL, owner_id TEXT
-      );
-    `);
-    db.close();
-    return dbPath;
-  }
-
-  afterAll(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
 
   it('leaves a ported conversation on the working agent', () => {
     const dbPath = createTestDb();
@@ -800,4 +802,132 @@ describe('OpenCodeImporter', () => {
 
     db.close();
   });
+});
+
+describe('tool vocabulary translation', () => {
+  const claudeOutDir = join(tmpdir(), 'sessionport-test-tools-' + randomUUID().slice(0, 8));
+  afterAll(() => {
+    rmSync(claudeOutDir, { recursive: true, force: true });
+  });
+
+  const claudeToolSession = () =>
+    makeMinimalSession({
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Read it.' }] },
+        {
+          role: 'assistant' as const,
+          parts: [
+            {
+              kind: 'tool_call' as const,
+              id: 'toolu_read1',
+              name: 'Read',
+              input: { file_path: '/tmp/notes.md', limit: 20 },
+            },
+            {
+              kind: 'tool_call' as const,
+              id: 'toolu_grep1',
+              name: 'Grep',
+              input: { pattern: 'TODO', path: '/tmp', glob: '*.ts' },
+            },
+            {
+              kind: 'tool_call' as const,
+              id: 'toolu_mcp1',
+              name: 'mcp__acme__do_thing',
+              input: { some_key: 1 },
+            },
+          ],
+        },
+      ],
+    });
+
+  const openCodeToolSession = () =>
+    makeMinimalSession({
+      sourceTool: 'opencode' as const,
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Edit it.' }] },
+        {
+          role: 'assistant' as const,
+          parts: [
+            {
+              kind: 'tool_call' as const,
+              id: 'call_edit1',
+              name: 'edit',
+              input: { filePath: '/tmp/a.ts', oldString: 'a', newString: 'b', replaceAll: true },
+            },
+            {
+              kind: 'tool_call' as const,
+              id: 'call_web1',
+              name: 'webfetch',
+              input: { url: 'https://example.com', format: 'text' },
+            },
+          ],
+        },
+      ],
+    });
+
+  function openCodeToolParts(sessionIR: SessionIR) {
+    const dbPath = createTestDb();
+    const result = new OpenCodeImporter(dbPath).importSession(sessionIR);
+    const db = new Database(dbPath);
+    const parts = (db.prepare('SELECT data FROM part WHERE session_id = ?').all(result.sessionId) as { data: string }[])
+      .map((r) => JSON.parse(r.data))
+      .filter((p) => p.type === 'tool');
+    db.close();
+    return parts;
+  }
+
+  function claudeToolBlocks(sessionIR: SessionIR) {
+    const dir = join(claudeOutDir, randomUUID());
+    mkdirSync(dir, { recursive: true });
+    const result = new ClaudeImporter(dir).importSession(sessionIR);
+    return readFileSync(result.path!, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.type === 'assistant')
+      .flatMap((e) => (e.message?.content ?? []) as { type: string; name?: string; input?: Record<string, unknown> }[])
+      .filter((b) => b.type === 'tool_use');
+  }
+
+  it('renames Claude tools and arguments to the OpenCode spelling', () => {
+    const parts = openCodeToolParts(claudeToolSession());
+
+    const read = parts.find((p) => p.tool === 'read');
+    expect(read).toBeDefined();
+    expect(read.state.input.filePath).toBe('/tmp/notes.md');
+    expect(read.state.input.file_path).toBeUndefined();
+    // A key that is spelled the same on both sides is left alone.
+    expect(read.state.input.limit).toBe(20);
+
+    const grep = parts.find((p) => p.tool === 'grep');
+    expect(grep.state.input.include).toBe('*.ts');
+    expect(grep.state.input.glob).toBeUndefined();
+    expect(grep.state.input.pattern).toBe('TODO');
+  });
+
+  it('renames OpenCode tools and arguments to the Claude spelling', () => {
+    const blocks = claudeToolBlocks(openCodeToolSession());
+
+    const edit = blocks.find((b) => b.name === 'Edit');
+    expect(edit).toBeDefined();
+    expect(edit!.input).toEqual({
+      file_path: '/tmp/a.ts',
+      old_string: 'a',
+      new_string: 'b',
+      replace_all: true,
+    });
+
+    // `url` is shared, but OpenCode's `format` has no Claude counterpart and
+    // must not be renamed into Claude's `prompt`, which means something else.
+    const fetch = blocks.find((b) => b.name === 'WebFetch');
+    expect(fetch!.input).toEqual({ url: 'https://example.com', format: 'text' });
+  });
+
+  it('leaves tools it does not know untouched', () => {
+    const parts = openCodeToolParts(claudeToolSession());
+    const mcp = parts.find((p) => p.tool === 'mcp__acme__do_thing');
+    expect(mcp).toBeDefined();
+    expect(mcp.state.input.some_key).toBe(1);
+  });
+
 });

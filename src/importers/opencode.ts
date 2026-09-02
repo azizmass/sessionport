@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import type { SessionIR, PartIR, ToolCallPart, ToolResultPart } from '../ir/types.js';
 import type { Importer, ImportResult } from './types.js';
 import { opencodeSessionId, opencodeMessageId, opencodePartId, opencodeEventId, opencodeSlug } from './ids.js';
+import { translateToolCall } from './tools.js';
 
 interface ToolPair {
   call: ToolCallPart;
@@ -90,7 +91,8 @@ function toolTitle(name: string, input: Record<string, unknown>): string {
 }
 
 function toolState(pair: ToolPair, start: number, end: number): Record<string, unknown> {
-  const input = toolInput(pair.call.input);
+  const translated = translateToolCall(pair.call.name, pair.call.input, 'opencode');
+  const input = toolInput(translated.input);
   const result = pair.result;
 
   if (!result) {
@@ -120,7 +122,7 @@ function toolState(pair: ToolPair, start: number, end: number): Record<string, u
     status: 'completed',
     input,
     output,
-    title: toolTitle(pair.call.name, input),
+    title: toolTitle(translated.name, input),
     metadata: { output, truncated: result.truncated === true },
     time: { start, end },
   };
@@ -139,7 +141,7 @@ function partToOpenCodeData(part: PartIR, callId: string, ts: number, toolPair?:
     case 'tool_call':
       return {
         type: 'tool',
-        tool: part.name,
+        tool: translateToolCall(part.name, part.input, 'opencode').name,
         callID: callId,
         state: toolState(toolPair ?? { call: part }, ts, ts),
       };
@@ -413,37 +415,29 @@ export class OpenCodeImporter implements Importer {
               : { part },
           );
 
-          // Assistant turns in OpenCode open with a step-start part.
-          if (msgRole === 'assistant') {
-            const stepTs = messageSeq.next();
-            const stepId = opencodePartId(stepTs);
-            const stepData = { type: 'step-start' };
-            insertPart.run(stepId, mid, sid, stepTs, ts, JSON.stringify(stepData));
+          // Every part is stored twice: as a row, and as the event that projects it.
+          const emitPart = (data: Record<string, unknown>, at?: number) => {
+            const partTs = at ?? messageSeq.next();
+            const opcId = opencodePartId(partTs);
+            insertPart.run(opcId, mid, sid, partTs, ts, JSON.stringify(data));
             events.push({
               id: opencodeEventId(eventSeq.next()),
               aggregate_id: sid,
               seq: seq++,
               type: 'message.part.updated.1',
-              data: JSON.stringify(eventPartData(stepData, stepId, mid, sid, stepTs)),
+              data: JSON.stringify(eventPartData(data, opcId, mid, sid, partTs)),
             });
-          }
+          };
+
+          // Assistant turns in OpenCode open with a step-start part.
+          if (msgRole === 'assistant') emitPart({ type: 'step-start' });
 
           let partSeq = 0;
 
           for (const { part, pair } of ordered) {
             const callId = pair?.call.id || `call_${mid.slice(4, 16)}_${partSeq}`;
             const partTs = messageSeq.next();
-            const opcId = opencodePartId(partTs);
-            const partData = partToOpenCodeData(part, callId, partTs, pair);
-            insertPart.run(opcId, mid, sid, partTs, ts, JSON.stringify(partData));
-
-            events.push({
-              id: opencodeEventId(eventSeq.next()),
-              aggregate_id: sid,
-              seq: seq++,
-              type: 'message.part.updated.1',
-              data: JSON.stringify(eventPartData(partData, opcId, mid, sid, partTs)),
-            });
+            emitPart(partToOpenCodeData(part, callId, partTs, pair), partTs);
             partSeq++;
           }
 

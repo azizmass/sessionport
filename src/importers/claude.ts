@@ -5,6 +5,7 @@ import { homedir } from 'os';
 import type { SessionIR, MessageIR, PartIR, ToolCallPart, ToolResultPart } from '../ir/types.js';
 import type { Importer, ImportResult } from './types.js';
 import { claudeSessionId, claudeUuid, claudeProjectSlug } from './ids.js';
+import { translateToolCall } from './tools.js';
 
 // Claude stamps every event with the branch it was recorded on. A ported
 // session did not happen here, but the directory it refers to usually exists,
@@ -175,11 +176,12 @@ export class ClaudeImporter implements Importer {
         const contentBlocks: unknown[] = [...partToClaudeBlocks(nonTool)];
 
         for (const pair of pairs) {
+          const translated = translateToolCall(pair.call.name, pair.call.input, 'claude');
           contentBlocks.push({
             type: 'tool_use',
             id: pair.call.id,
-            name: pair.call.name,
-            input: typeof pair.call.input === 'string' ? pair.call.input : pair.call.input,
+            name: translated.name,
+            input: translated.input,
             caller: { type: 'direct' },
           });
         }
