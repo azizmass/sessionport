@@ -10,23 +10,33 @@ interface ToolPair {
   result?: ToolResultPart;
 }
 
-function pairTools(parts: PartIR[]): { nonTool: PartIR[]; pairs: ToolPair[] } {
+/**
+ * A tool's result does not always sit in the message that made the call — Claude Code
+ * puts it in the following user turn — so results are gathered across the whole
+ * session first and matched to their call by id.
+ */
+function collectToolResults(session: SessionIR): Map<string, ToolResultPart> {
+  const results = new Map<string, ToolResultPart>();
+  for (const msg of session.messages) {
+    for (const part of msg.parts) {
+      if (part.kind === 'tool_result') results.set(part.toolCallId, part);
+    }
+  }
+  return results;
+}
+
+function pairTools(parts: PartIR[], toolResults: Map<string, ToolResultPart>): { nonTool: PartIR[]; pairs: ToolPair[] } {
   const nonTool: PartIR[] = [];
-  const callMap = new Map<string, ToolPair>();
   const pairs: ToolPair[] = [];
 
   for (const p of parts) {
     if (p.kind === 'tool_call') {
-      const pair: ToolPair = { call: p };
-      callMap.set(p.id, pair);
-      pairs.push(pair);
+      pairs.push({ call: p, result: toolResults.get(p.id) });
     } else if (p.kind === 'tool_result') {
-      const existing = callMap.get(p.toolCallId);
-      if (existing) {
-        existing.result = p;
-      } else {
-        pairs.push({ call: { kind: 'tool_call', id: p.toolCallId, name: 'unknown', input: '' }, result: p });
-      }
+      // Already emitted alongside its call. Pairing per message instead of per
+      // session used to write it a second time as a call named 'unknown', which
+      // doubled every tool call in a ported Claude session.
+      continue;
     } else {
       nonTool.push(p);
     }
@@ -78,11 +88,12 @@ export class CodexImporter implements Importer {
     }));
 
     const tsISO = now.toISOString();
+    const toolResults = collectToolResults(session);
 
     for (const msg of session.messages) {
       if (msg.role === 'system') continue;
 
-      const { nonTool, pairs } = pairTools(msg.parts);
+      const { nonTool, pairs } = pairTools(msg.parts, toolResults);
       const turnId = codexTurnId();
 
       lines.push(JSON.stringify({
@@ -113,9 +124,13 @@ export class CodexImporter implements Importer {
       }
 
       const textParts = nonTool.filter((p) => p.kind === 'text');
+      // A Claude user turn that exists only to carry tool results has nothing of its
+      // own to say; writing an empty message for it would put a blank turn in the
+      // transcript for every tool call in the session.
+      const carriesToolResults = msg.parts.some((p) => p.kind === 'tool_result');
 
       const codexRole = msg.role === 'developer' ? 'developer' : msg.role;
-      if (textParts.length > 0 || (msg.role === 'user' && pairs.length === 0)) {
+      if (textParts.length > 0 || (msg.role === 'user' && pairs.length === 0 && !carriesToolResults)) {
         lines.push(JSON.stringify({
           timestamp: tsISO,
           type: 'response_item',
@@ -131,6 +146,10 @@ export class CodexImporter implements Importer {
       }
 
       for (const pair of pairs) {
+        // One id per pair: a fresh codexCallId() for the output meant no result
+        // ever pointed back at the call it came from.
+        const callId = codexCallId();
+
         lines.push(JSON.stringify({
           timestamp: tsISO,
           type: 'response_item',
@@ -138,7 +157,7 @@ export class CodexImporter implements Importer {
             type: 'custom_tool_call',
             id: codexToolCallId(),
             status: 'completed',
-            call_id: codexCallId(),
+            call_id: callId,
             name: pair.call.name || 'exec',
             input: typeof pair.call.input === 'string' ? pair.call.input : JSON.stringify(pair.call.input),
           },
@@ -151,7 +170,7 @@ export class CodexImporter implements Importer {
             payload: {
               type: 'custom_tool_call_output',
               id: `ctco_${claudeUuid().slice(0, 12)}`,
-              call_id: codexCallId(),
+              call_id: callId,
               output: [{ type: 'input_text', text: pair.result.content.slice(0, 5000) }],
             },
           }));

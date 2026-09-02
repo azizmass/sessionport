@@ -383,6 +383,44 @@ describe('CodexImporter', () => {
     expect(idx.thread_name).toBe('Test Import Session');
   });
 
+  it('writes each tool call once, with its result pointing back at it', () => {
+    // Claude Code puts a tool result in the user turn *after* the call. Pairing per
+    // message never matched the two, so every call was written twice — once with no
+    // output, once as a call named 'unknown' carrying the orphaned result.
+    const session = makeMinimalSession({
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'List it.' }] },
+        {
+          role: 'assistant' as const,
+          parts: [{ kind: 'tool_call' as const, id: 'toolu_ls', name: 'Bash', input: { command: 'ls' } }],
+        },
+        {
+          role: 'user' as const,
+          parts: [{ kind: 'tool_result' as const, toolCallId: 'toolu_ls', content: 'file.txt', isError: false }],
+        },
+      ],
+    });
+
+    const result = new CodexImporter(tmpDir).importSession(session);
+    const lines = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+
+    const calls = lines.filter((l) => l.payload?.type === 'custom_tool_call');
+    const outputs = lines.filter((l) => l.payload?.type === 'custom_tool_call_output');
+    expect(calls.length).toBe(1);
+    expect(outputs.length).toBe(1);
+    expect(calls[0].payload.name).toBe('Bash');
+    // The output must carry the call's own id, not a freshly generated one.
+    expect(outputs[0].payload.call_id).toBe(calls[0].payload.call_id);
+
+    // …and the user turn that only carried the result leaves no empty message behind.
+    const messages = lines.filter((l) => l.payload?.type === 'message');
+    expect(messages.length).toBe(1);
+    expect(messages[0].payload.content[0].text).toBe('List it.');
+  });
 });
 
 
