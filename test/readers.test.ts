@@ -10,11 +10,12 @@ import { compactSession } from '../src/render/compact.js';
 import { renderJson } from '../src/render/json.js';
 import { renderMarkdown } from '../src/render/markdown.js';
 import { renderSeed } from '../src/render/seeds.js';
-import { createOpenCodeFixture } from './fixtures/gen-fixtures.js';
+import { createOpenCodeFixture, createOpenCodeV2Fixture } from './fixtures/gen-fixtures.js';
 import { displayTitle } from '../src/ir/normalize.js';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures');
 const OPENCODE_DB = join(FIXTURES, 'opencode-test.db');
+const OPENCODE_V2_DB = join(FIXTURES, 'opencode-v2-test.db');
 const CLAUDE_PROJECTS = join(FIXTURES, 'claude-projects');
 const CODEX_ROOT = join(FIXTURES, 'codex-root');
 
@@ -204,6 +205,7 @@ describe('CodexReader', () => {
 describe('OpenCodeReader', () => {
   beforeAll(() => {
     createOpenCodeFixture(OPENCODE_DB);
+    createOpenCodeV2Fixture(OPENCODE_V2_DB);
   });
 
   it('lists sessions', () => {
@@ -225,6 +227,38 @@ describe('OpenCodeReader', () => {
     expect(session.messages[1].parts[0]).toHaveProperty('kind', 'reasoning');
     expect(session.messages[1].parts[1]).toHaveProperty('kind', 'tool_call');
     expect(session.model?.id).toBe('glm-5.2');
+  });
+
+  it('lists v2 sessions and falls back to the last message for their title', () => {
+    const reader = new OpenCodeReader(OPENCODE_V2_DB);
+    const sessions = reader.listSessions();
+    expect(sessions.find((s) => s.id === 'ses_v2fixture')?.title).toBe(
+      'Test OpenCode v2 Session',
+    );
+    const untitled = sessions.find((s) => s.id === 'ses_v2untitled');
+    expect(displayTitle(untitled!)).toBe('Explain the billing adapter.');
+  });
+
+  it('reads v2 messages, reasoning, tool calls and their results', () => {
+    const reader = new OpenCodeReader(OPENCODE_V2_DB);
+    const session = reader.readSession('ses_v2fixture');
+    expect(session.messages.length).toBe(3);
+    expect(session.model?.id).toBe('glm-5.2');
+
+    const assistant = session.messages[1];
+    expect(assistant.role).toBe('assistant');
+    expect(assistant.parts.map((p) => p.kind)).toEqual([
+      'reasoning',
+      'text',
+      'tool_call',
+      'tool_result',
+    ]);
+    const result = assistant.parts[3];
+    if (result.kind === 'tool_result') {
+      expect(result.toolCallId).toBe('call_v2_001');
+      expect(result.content).toContain('def auth');
+      expect(result.isError).toBe(false);
+    }
   });
 });
 

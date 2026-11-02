@@ -148,8 +148,9 @@ sessionport import opencode <id> claude
 sessionport import codex <id> opencode --mode compacted
 ```
 
-Supports Claude JSONL, OpenCode SQLite (`session`, `message`, `part`, `event`,
-`event_sequence` tables), and Codex rollout JSONL.
+Supports Claude JSONL, OpenCode SQLite (v2's `session_v2` + `session_message`,
+and the legacy `session`, `message`, `part`, `event`, `event_sequence` tables),
+and Codex rollout JSONL.
 
 ### `sessionport plan <source> <id>`
 
@@ -223,7 +224,7 @@ sessionport cleanup opencode --dry-run  # list without deleting
 
 | Source → Target | Format |
 |---|---|
-| Claude Code → OpenCode | Writes directly to `~/.local/share/opencode/opencode.db` (event-sourced, all 5 tables) |
+| Claude Code → OpenCode | Writes directly to `~/.local/share/opencode/opencode.db` (`session_v2` + `session_message` on OpenCode 2.x; the event-sourced tables on older versions) |
 | OpenCode → Claude Code | Writes JSONL to `~/.claude/projects/<slug>/<uuid>.jsonl` |
 | Claude Code → Codex | Writes rollout JSONL + index to `~/.codex/sessions/` |
 | Codex → OpenCode | Writes directly to OpenCode SQLite |
@@ -233,7 +234,7 @@ sessionport cleanup opencode --dry-run  # list without deleting
 ## Supported Sources
 
 - **Claude Code** — reads `~/.claude/projects/*/*.jsonl`
-- **OpenCode** — reads `~/.local/share/opencode/opencode.db` (SQLite)
+- **OpenCode** — reads `~/.local/share/opencode/opencode.db` (SQLite, v2 and legacy sessions)
 - **Codex** — reads `~/.codex/session_index.jsonl` + rollout JSONLs
 
 ## Programmatic Usage

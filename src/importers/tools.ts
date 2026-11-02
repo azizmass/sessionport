@@ -49,8 +49,10 @@ const TOOLS: ToolSpec[] = [
   // thing, so neither is renamed into the other.
   { claude: 'WebFetch', opencode: 'webfetch' },
   { claude: 'WebSearch', opencode: 'websearch' },
-  { claude: 'Agent', opencode: 'task', aliases: ['Task'] },
+  { claude: 'Agent', opencode: 'task', aliases: ['Task', 'subagent'] },
   { claude: 'AskUserQuestion', opencode: 'question' },
+  // OpenCode's skill loader takes `name`; Claude's takes `skill`.
+  { claude: 'Skill', opencode: 'skill', args: { skill: 'name' } },
 ];
 
 interface Resolved {

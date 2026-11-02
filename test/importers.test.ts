@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { ClaudeImporter } from '../src/importers/claude.js';
+import { createOpenCodeV2Fixture } from './fixtures/gen-fixtures.js';
 import { CodexImporter } from '../src/importers/codex.js';
 import { OpenCodeImporter } from '../src/importers/opencode.js';
 import {
@@ -13,6 +14,7 @@ import {
 } from '../src/importers/ids.js';
 import type { SessionIR } from '../src/ir/types.js';
 import { ClaudeReader } from '../src/readers/claude.js';
+import { OpenCodeReader } from '../src/readers/opencode.js';
 import { extractPlans, selectPlans } from '../src/ir/plan.js';
 import { planSession } from '../src/render/plan.js';
 
@@ -203,13 +205,135 @@ describe('ClaudeImporter', () => {
 
     const userMsgs = lines.filter((l) => l.type === 'user');
     const assistantMsgs = lines.filter((l) => l.type === 'assistant');
-    expect(userMsgs.length).toBe(2);
+    // The tool-only message has no user content; its result is now emitted as
+    // the user turn that follows the assistant tool call.
+    expect(userMsgs.length).toBe(3);
     expect(assistantMsgs.length).toBe(3);
 
     const toolAssistant = assistantMsgs[1];
     expect(toolAssistant.message.content.some((c: Record<string, unknown>) => c.type === 'tool_use')).toBe(true);
     const toolUse = toolAssistant.message.content.find((c: Record<string, unknown>) => c.type === 'tool_use');
     expect(toolUse.name).toBe('execute_command');
+  });
+
+  it('records Claude model ids without a provider prefix', () => {
+    const result = new ClaudeImporter(tmpDir).importSession(makeMinimalSession());
+    const lines = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const assistant = lines.find((line) => line.type === 'assistant');
+    // Claude resumes on `message.model`; `anthropic/claude-opus-5` is rejected
+    // as an unknown model, while the bare id is what native transcripts hold.
+    expect(assistant.message.model).toBe('claude-opus-5');
+  });
+
+  it('does not claim a non-Claude model in the transcript', () => {
+    const session = makeMinimalSession({
+      model: { id: 'deepseek-v4.1-flash', provider: 'opencode-go' },
+    });
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const lines = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const assistant = lines.find((line) => line.type === 'assistant');
+    // Let Claude use its configured default instead of failing to resume.
+    expect(assistant.message).not.toHaveProperty('model');
+  });
+
+  it('drops reasoning instead of writing thinking blocks without a signature', () => {
+    const result = new ClaudeImporter(tmpDir).importSession(makeMinimalSession());
+    const lines = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const types = lines
+      .filter((line) => line.type === 'assistant')
+      .flatMap((line) => line.message.content.map((block: { type: string }) => block.type));
+    expect(types).not.toContain('thinking');
+  });
+
+  it('turns OpenCode tool ids and missing outputs into a valid Claude history', () => {
+    const session = makeMinimalSession({
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: '   ' }] },
+        {
+          role: 'assistant' as const,
+          parts: [
+            { kind: 'text' as const, text: ' ' },
+            {
+              kind: 'tool_call' as const,
+              id: 'read:7',
+              name: 'Read',
+              input: { file_path: '/tmp/a.ts' },
+            },
+          ],
+        },
+        {
+          role: 'user' as const,
+          parts: [
+            {
+              kind: 'tool_result' as const,
+              toolCallId: 'read:7',
+              content: 'file contents',
+            },
+          ],
+        },
+        {
+          role: 'assistant' as const,
+          parts: [
+            {
+              kind: 'tool_call' as const,
+              id: 'bash:8',
+              name: 'Bash',
+              input: { command: 'npm test' },
+            },
+          ],
+        },
+      ],
+    });
+    const result = new ClaudeImporter(tmpDir).importSession(session);
+    const lines = readFileSync(result.path, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    const uses = lines
+      .filter((line) => line.type === 'assistant')
+      .flatMap((line) => line.message.content)
+      .filter((block: { type: string }) => block.type === 'tool_use');
+    // Colons are not valid in Claude tool ids.
+    for (const use of uses) expect(use.id).toMatch(/^[A-Za-z0-9_-]+$/);
+
+    const resultEvents = lines.filter(
+      (line) =>
+        line.type === 'user' &&
+        Array.isArray(line.message?.content) &&
+        line.message.content.some((block: { type: string }) => block.type === 'tool_result'),
+    );
+    const resultIds = resultEvents.flatMap((line) =>
+      line.message.content
+        .filter((block: { type: string }) => block.type === 'tool_result')
+        .map((block: { tool_use_id: string }) => block.tool_use_id),
+    );
+    expect(resultIds).toEqual(uses.map((use) => use.id));
+    // The single real result carries Claude's structured result marker.
+    expect(resultEvents[0].toolUseResult).toBe('file contents');
+    expect(resultEvents[0].sourceToolAssistantUUID).toBeTruthy();
+    // The interrupted second call is answered explicitly instead of dangling.
+    const interrupted = resultEvents
+      .flatMap((line) => line.message.content)
+      .find((block: { tool_use_id: string }) => block.tool_use_id === uses[1].id);
+    expect(interrupted.is_error).toBe(true);
+    expect(interrupted.content).toContain('No tool output captured');
+
+    // Whitespace-only text must not become an empty text block.
+    for (const line of lines) {
+      for (const block of line.message?.content ?? []) {
+        if (block.type === 'text') expect(block.text.trim()).not.toBe('');
+      }
+    }
   });
 
   it('keeps each message at its own time rather than the import time', () => {
@@ -843,6 +967,100 @@ describe('OpenCodeImporter', () => {
   });
 });
 
+describe('OpenCodeImporter (v2 schema)', () => {
+  const dir = join(tmpdir(), 'sessionport-test-opencode-v2-' + randomUUID().slice(0, 8));
+
+  beforeAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function makeDb(name: string): string {
+    const dbPath = join(dir, name);
+    createOpenCodeV2Fixture(dbPath);
+    return dbPath;
+  }
+
+  it('writes session_v2 and session_message, which OpenCode 2 reads', () => {
+    const dbPath = makeDb('import.db');
+    const result = new OpenCodeImporter(dbPath).importSession(makeMinimalSession());
+    expect(result.messageCount).toBe(5);
+
+    const db = new Database(dbPath);
+    const session = db
+      .prepare('SELECT title, agent, model FROM session_v2 WHERE id = ?')
+      .get(result.sessionId) as { title: string; agent: string; model: string };
+    expect(session.title).toBe('Test Import Session');
+    expect(session.agent).toBe('build');
+    // The fixture's current model wins over the source model.
+    expect(JSON.parse(session.model)).toMatchObject({ id: 'glm-5.2', providerID: 'opencode-go' });
+
+    const rows = db
+      .prepare('SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq')
+      .all(result.sessionId) as { type: string; data: string }[];
+    expect(rows.map((r) => r.type)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'assistant',
+    ]);
+
+    const toolMessage = rows
+      .map((r) => JSON.parse(r.data))
+      .find((data) => data.content?.some((part: { type: string }) => part.type === 'tool'));
+    const tool = toolMessage.content.find((part: { type: string }) => part.type === 'tool');
+    expect(tool.state.status).toBe('completed');
+    expect(tool.state.content[0].text).toContain('total 42');
+    expect(tool.time.created).toBeGreaterThan(0);
+
+    db.close();
+  });
+
+  it('reads back exactly what it wrote', () => {
+    const dbPath = makeDb('roundtrip.db');
+    const result = new OpenCodeImporter(dbPath).importSession(makeMinimalSession());
+    const session = new OpenCodeReader(dbPath).readSession(result.sessionId);
+
+    expect(session.title).toBe('Test Import Session');
+    expect(session.messages).toHaveLength(5);
+    expect(session.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'assistant',
+    ]);
+
+    const toolMessage = session.messages.find((m) =>
+      m.parts.some((part) => part.kind === 'tool_call'),
+    );
+    expect(toolMessage).toBeDefined();
+    const resultPart = toolMessage!.parts.find((part) => part.kind === 'tool_result');
+    expect(resultPart).toBeDefined();
+    if (resultPart?.kind === 'tool_result') {
+      expect(resultPart.content).toContain('total 42');
+    }
+  });
+
+  it('keeps plan exports on the plan agent', () => {
+    const dbPath = makeDb('plan.db');
+    const session = makeMinimalSession({ metadata: { plan: true } });
+    const result = new OpenCodeImporter(dbPath).importSession(session);
+
+    const db = new Database(dbPath);
+    const row = db
+      .prepare('SELECT agent FROM session_v2 WHERE id = ?')
+      .get(result.sessionId) as { agent: string };
+    expect(row.agent).toBe('plan');
+    db.close();
+  });
+});
+
 describe('tool vocabulary translation', () => {
   const claudeOutDir = join(tmpdir(), 'sessionport-test-tools-' + randomUUID().slice(0, 8));
   afterAll(() => {
@@ -991,6 +1209,41 @@ describe('tool vocabulary translation', () => {
     // must not be renamed into Claude's `prompt`, which means something else.
     const fetch = blocks.find((b) => b.name === 'WebFetch');
     expect(fetch!.input).toEqual({ url: 'https://example.com', format: 'text' });
+  });
+
+  it('maps OpenCode skill and subagent calls to Claude tools', () => {
+    const blocks = claudeToolBlocks(
+      makeMinimalSession({
+        sourceTool: 'opencode' as const,
+        messages: [
+          { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Do it.' }] },
+          {
+            role: 'assistant' as const,
+            parts: [
+              { kind: 'tool_call' as const, id: 'call_skill', name: 'skill', input: { name: 'graphify' } },
+              {
+                kind: 'tool_call' as const,
+                id: 'call_sub',
+                name: 'subagent',
+                input: { description: 'Explore', prompt: 'Look around', subagent_type: 'explore' },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const skill = blocks.find((b) => b.name === 'Skill');
+    expect(skill).toBeDefined();
+    expect(skill!.input).toEqual({ skill: 'graphify' });
+
+    const subagent = blocks.find((b) => b.name === 'Agent');
+    expect(subagent).toBeDefined();
+    expect(subagent!.input).toEqual({
+      description: 'Explore',
+      prompt: 'Look around',
+      subagent_type: 'explore',
+    });
   });
 
   it('leaves tools it does not know untouched', () => {

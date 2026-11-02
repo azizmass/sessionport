@@ -28,6 +28,17 @@ function isoOr(ts: number | undefined, fallback: string): string {
   return Number.isNaN(d.getTime()) ? fallback : d.toISOString();
 }
 
+/**
+ * Claude resumes a session on the model recorded in its last assistant message.
+ * Native transcripts use a bare id (`claude-opus-5-5`); `provider/id` is rejected
+ * as an unknown model, and a model ported from another vendor does not exist
+ * here at all — in both cases Claude must fall back to its default.
+ */
+function claudeModelId(session: SessionIR): string | undefined {
+  const id = session.model?.id;
+  return id && /^claude-/.test(id) ? id : undefined;
+}
+
 // Claude records the CLI version that wrote each event; a ported session
 // claims a recent one so the reader does not treat it as ancient.
 const CLAUDE_VERSION = '2.1.250';
@@ -62,19 +73,64 @@ function pairTools(parts: PartIR[]): { nonTool: PartIR[]; pairs: ToolPair[] } {
   return { nonTool, pairs };
 }
 
+/** Tool outputs may live in a different message than the call; index them by id. */
+function collectToolResults(session: SessionIR): Map<string, ToolResultPart> {
+  const results = new Map<string, ToolResultPart>();
+  for (const message of session.messages) {
+    for (const part of message.parts) {
+      if (part.kind === 'tool_result') results.set(part.toolCallId, part);
+    }
+  }
+  return results;
+}
+
 function partToClaudeBlocks(parts: PartIR[]): unknown[] {
   const blocks: unknown[] = [];
   for (const p of parts) {
-    switch (p.kind) {
-      case 'text':
-        blocks.push({ type: 'text', text: p.text });
-        break;
-      case 'reasoning':
-        blocks.push({ type: 'thinking', thinking: p.text });
-        break;
+    // Reasoning is deliberately dropped: Claude only accepts thinking blocks
+    // carrying a signature it issued. An imported block has none, and the API
+    // rejects the whole conversation if one is present.
+    // Whitespace-only text is dropped too: Claude rejects empty text blocks.
+    if (p.kind === 'text' && p.text.trim() !== '') {
+      blocks.push({ type: 'text', text: p.text });
     }
   }
   return blocks;
+}
+
+/**
+ * Claude accepts only [A-Za-z0-9_-] in a tool id, while OpenCode's legacy ids
+ * look like `read:7`. A colon makes Claude report the conversation as malformed
+ * (or leaves the tool result unmatched), so every id is mapped once and reused
+ * for both the call and its result.
+ */
+function toolIdFactory(): (original: string) => string {
+  const mapped = new Map<string, string>();
+  const used = new Set<string>();
+  let counter = 0;
+
+  return (original: string): string => {
+    const known = mapped.get(original);
+    if (known) return known;
+
+    let candidate = original.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+    if (!candidate) candidate = `tool_${++counter}`;
+    let suffix = 1;
+    while (used.has(candidate)) {
+      suffix++;
+      candidate = `${candidate.slice(0, 60)}_${suffix}`;
+    }
+
+    used.add(candidate);
+    mapped.set(original, candidate);
+    return candidate;
+  };
+}
+
+/** A tool result Claude can send: empty output becomes an explicit message. */
+function toolResultContent(content: string, isError: boolean | undefined): string {
+  if (content.trim()) return content;
+  return isError ? 'Tool call failed.' : '(no output)';
 }
 
 export class ClaudeImporter implements Importer {
@@ -105,6 +161,7 @@ export class ClaudeImporter implements Importer {
 
     const gitBranch = currentBranch(cwd);
     const version = CLAUDE_VERSION;
+    const messageModel = claudeModelId(session);
 
     lines.push(JSON.stringify({ type: 'mode', mode: 'normal', sessionId }));
     lines.push(JSON.stringify({ type: 'permission-mode', permissionMode: 'default', sessionId }));
@@ -115,6 +172,19 @@ export class ClaudeImporter implements Importer {
     }
 
     let prevUuid = '';
+    const claudeToolId = toolIdFactory();
+    const allToolResults = collectToolResults(session);
+    // A result that already has its own user turn will be written there; don't
+    // also write a second one right after the assistant call.
+    const resultsInUserMessages = new Set(
+      session.messages
+        .filter((message) => message.role === 'user')
+        .flatMap((message) =>
+          message.parts
+            .filter((part): part is ToolResultPart => part.kind === 'tool_result')
+            .map((part) => part.toolCallId),
+        ),
+    );
 
     for (const msg of session.messages) {
       if (msg.role === 'system' || msg.role === 'developer') continue;
@@ -140,17 +210,26 @@ export class ClaudeImporter implements Importer {
 
       if (msg.role === 'user') {
         const contentBlocks: unknown[] = [...partToClaudeBlocks(nonTool)];
+        const toolResults: { id: string; content: string; isError: boolean }[] = [];
 
         for (const pair of pairs) {
           if (pair.result) {
+            const result = {
+              id: claudeToolId(pair.result.toolCallId),
+              content: toolResultContent(pair.result.content, pair.result.isError),
+              isError: pair.result.isError || false,
+            };
+            toolResults.push(result);
             contentBlocks.push({
               type: 'tool_result',
-              tool_use_id: pair.result.toolCallId,
-              content: pair.result.content,
-              is_error: pair.result.isError || false,
+              tool_use_id: result.id,
+              content: result.content,
+              is_error: result.isError,
             });
           }
         }
+
+        if (contentBlocks.length === 0) continue;
 
         const userEvent: Record<string, unknown> = {
           type: 'user',
@@ -159,13 +238,19 @@ export class ClaudeImporter implements Importer {
           parentUuid: prevUuid || null,
           ...common,
           permissionMode: 'default',
+          message: {
+            role: 'user',
+            content: contentBlocks.length === 1 && contentBlocks[0] && typeof (contentBlocks[0] as Record<string, unknown>).type === 'string' && (contentBlocks[0] as Record<string, unknown>).type === 'text'
+              ? ((contentBlocks[0] as Record<string, unknown>).text as string)
+              : contentBlocks,
+          },
         };
 
-        if (contentBlocks.length > 0) {
-          userEvent.message = { role: 'user', content: contentBlocks.length === 1 && contentBlocks[0] && typeof (contentBlocks[0] as Record<string, unknown>).type === 'string' && (contentBlocks[0] as Record<string, unknown>).type === 'text'
-            ? ((contentBlocks[0] as Record<string, unknown>).text as string)
-            : contentBlocks,
-          };
+        // A single tool result is the shape Claude writes when it executes a
+        // tool itself; `toolUseResult` is what its transcript reader keys on.
+        if (toolResults.length === 1) {
+          userEvent.toolUseResult = toolResults[0].content;
+          if (prevUuid) userEvent.sourceToolAssistantUUID = prevUuid;
         }
 
         lines.push(JSON.stringify(userEvent));
@@ -174,17 +259,47 @@ export class ClaudeImporter implements Importer {
 
       if (msg.role === 'assistant') {
         const contentBlocks: unknown[] = [...partToClaudeBlocks(nonTool)];
+        const toolResults: { id: string; content: string; isError: boolean }[] = [];
 
         for (const pair of pairs) {
           const translated = translateToolCall(pair.call.name, pair.call.input, 'claude');
+          const id = claudeToolId(pair.call.id);
           contentBlocks.push({
             type: 'tool_use',
-            id: pair.call.id,
+            id,
             name: translated.name,
             input: toolInput(translated.input),
             caller: { type: 'direct' },
           });
+
+          // Every tool_use must be answered by a tool_result in the next user
+          // turn. OpenCode leaves interrupted calls without one, and Claude
+          // then reads the following turn as malformed.
+          if (pair.result) {
+            toolResults.push({
+              id,
+              content: toolResultContent(pair.result.content, pair.result.isError),
+              isError: pair.result.isError || false,
+            });
+          } else if (!resultsInUserMessages.has(pair.call.id)) {
+            const elsewhere = allToolResults.get(pair.call.id);
+            toolResults.push(
+              elsewhere
+                ? {
+                    id,
+                    content: toolResultContent(elsewhere.content, elsewhere.isError),
+                    isError: elsewhere.isError || false,
+                  }
+                : {
+                    id,
+                    content: 'No tool output captured (imported session).',
+                    isError: true,
+                  },
+            );
+          }
         }
+
+        if (contentBlocks.length === 0) continue;
 
         const assistantEvent: Record<string, unknown> = {
           type: 'assistant',
@@ -196,7 +311,7 @@ export class ClaudeImporter implements Importer {
             type: 'message',
             role: 'assistant',
             content: contentBlocks,
-            model: session.model ? `${session.model.provider}/${session.model.id}` : 'unknown',
+            ...(messageModel ? { model: messageModel } : {}),
             usage: {
               input_tokens: msg.tokens?.input || 0,
               output_tokens: msg.tokens?.output || 0,
@@ -212,26 +327,35 @@ export class ClaudeImporter implements Importer {
         // Claude carries tool results in the user turn after the call, but
         // OpenCode packs them into the same assistant message. Without this
         // split they were written nowhere and the outputs were lost.
-        const results = pairs.filter((p) => p.result);
-        if (results.length > 0) {
+        if (toolResults.length > 0) {
           const resultUuid = claudeUuid();
-          lines.push(
-            JSON.stringify({
-              type: 'user',
-              uuid: resultUuid,
-              parentUuid: uuid,
-              ...common,
-              message: {
-                role: 'user',
-                content: results.map((p) => ({
-                  type: 'tool_result',
-                  tool_use_id: p.result!.toolCallId,
-                  content: p.result!.content,
-                  is_error: p.result!.isError || false,
-                })),
-              },
-            }),
+          const resultTimestamp = isoOr(
+            msg.timestamp ? msg.timestamp + 1 : new Date(sessionStart).getTime() + 1,
+            sessionStart,
           );
+          const resultEvent: Record<string, unknown> = {
+            type: 'user',
+            uuid: resultUuid,
+            parentUuid: uuid,
+            ...common,
+            timestamp: resultTimestamp,
+            message: {
+              role: 'user',
+              content: toolResults.map((result) => ({
+                type: 'tool_result',
+                tool_use_id: result.id,
+                content: result.content,
+                is_error: result.isError,
+              })),
+            },
+          };
+
+          if (toolResults.length === 1) {
+            resultEvent.toolUseResult = toolResults[0].content;
+            resultEvent.sourceToolAssistantUUID = uuid;
+          }
+
+          lines.push(JSON.stringify(resultEvent));
           prevUuid = resultUuid;
         }
       }
