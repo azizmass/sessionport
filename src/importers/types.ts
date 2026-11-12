@@ -4,6 +4,8 @@ export interface ImportResult {
   target: string;
   sessionId?: string;
   path?: string;
+  /** Directory the target tool must be opened from to see the session. */
+  cwd?: string;
   messageCount: number;
 }
 

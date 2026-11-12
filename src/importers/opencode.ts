@@ -585,6 +585,7 @@ function importIntoV2(
     target: 'opencode',
     sessionId: sid,
     path: db.name,
+    cwd,
     messageCount: importable.length,
   };
 }
@@ -999,6 +1000,7 @@ export class OpenCodeImporter implements Importer {
         target: 'opencode',
         sessionId: sid,
         path: this.dbPath,
+        cwd,
         messageCount: session.messages.filter(
           (m) =>
             m.role !== 'system' &&

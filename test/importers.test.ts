@@ -216,6 +216,15 @@ describe('ClaudeImporter', () => {
     expect(toolUse.name).toBe('execute_command');
   });
 
+  it('falls back to the current directory when the source cwd is gone', () => {
+    const result = new ClaudeImporter(tmpDir).importSession(
+      makeMinimalSession({ cwd: '/no/such/project/on/this/machine' }),
+    );
+    // Otherwise the session is filed under a slug no real checkout can reach.
+    expect(result.cwd).toBe(process.cwd());
+    expect(result.path).toContain(claudeProjectSlug(process.cwd()));
+  });
+
   it('records Claude model ids without a provider prefix', () => {
     const result = new ClaudeImporter(tmpDir).importSession(makeMinimalSession());
     const lines = readFileSync(result.path, 'utf-8')
