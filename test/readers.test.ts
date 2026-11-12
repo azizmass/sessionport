@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { join } from 'path';
 import { unlinkSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -197,6 +197,104 @@ describe('CodexReader', () => {
     // Without an indexed name, the environment block must still not become the title.
     writeFileSync(join(dir, 'session_index.jsonl'), '');
     expect(new CodexReader(dir).readSession('codex-named-001').title).toBe('please look at the deploy');
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('skips a malformed rollout line instead of dropping the session', () => {
+    const dir = join(tmpdir(), 'sessionport-codex-' + randomUUID().slice(0, 8));
+    mkdirSync(dir, { recursive: true });
+    const fp = join(dir, 'rollout.jsonl');
+    writeFileSync(
+      fp,
+      [
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:02.242Z',
+          type: 'session_meta',
+          payload: { session_id: 'codex-bad-001', cwd: '/tmp', model_provider: 'openai' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:20.219Z',
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] },
+        }),
+        // A rollout cut off mid-record: this one line used to abort the import.
+        '{"timestamp":"2026-07-25T09:13:21.000Z","type":"response_item","payload":{"type":"reasoning","content":[{"text":"cut off mid-',
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:22.000Z',
+          type: 'response_item',
+          payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'hi' }] },
+        }),
+      ].join('\n'),
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const session = new CodexReader(dir).readFromFile(fp);
+
+    expect(session.id).toBe('codex-bad-001');
+    expect(session.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0][0])).toContain('skipped 1 malformed line');
+    expect(String(warn.mock.calls[0][0])).toContain('line 3');
+
+    warn.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps the session list when one index line is malformed', () => {
+    const dir = join(tmpdir(), 'sessionport-codex-' + randomUUID().slice(0, 8));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'session_index.jsonl'),
+      [
+        JSON.stringify({ id: 'codex-first', thread_name: 'First', updated_at: '2026-07-25T09:10:00.000Z' }),
+        '{"id": "codex-cut-off", "thread_name":',
+        JSON.stringify({ id: 'codex-second', thread_name: 'Second', updated_at: '2026-07-25T09:20:00.000Z' }),
+      ].join('\n'),
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sessions = new CodexReader(dir).listSessions();
+
+    expect(sessions.map((s) => s.id)).toEqual(['codex-second', 'codex-first']);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0][0])).toContain('line 2');
+
+    warn.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads a line longer than the streaming chunk without corrupting it', () => {
+    const dir = join(tmpdir(), 'sessionport-codex-' + randomUUID().slice(0, 8));
+    mkdirSync(dir, { recursive: true });
+    const fp = join(dir, 'rollout.jsonl');
+    // Multi-byte characters straddle the 1 MiB chunk boundary at some point.
+    const reasoning = '😀'.repeat(400_000);
+    writeFileSync(
+      fp,
+      [
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:02.242Z',
+          type: 'session_meta',
+          payload: { session_id: 'codex-long-001', cwd: '/tmp', model_provider: 'openai' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:20.219Z',
+          type: 'response_item',
+          payload: { type: 'reasoning', content: [{ text: reasoning }] },
+        }),
+        JSON.stringify({
+          timestamp: '2026-07-25T09:13:21.000Z',
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+        }),
+      ].join('\n'),
+    );
+
+    const session = new CodexReader(dir).readFromFile(fp);
+    const part = session.messages[0].parts[0];
+    expect(part.kind).toBe('reasoning');
+    expect((part as { text: string }).text).toBe(reasoning);
 
     rmSync(dir, { recursive: true, force: true });
   });
