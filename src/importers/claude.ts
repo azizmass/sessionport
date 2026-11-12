@@ -143,7 +143,10 @@ export class ClaudeImporter implements Importer {
 
   importSession(session: SessionIR): ImportResult {
     const projectsDir = this.projectsDir;
-    const cwd = session.cwd || process.cwd();
+    // A session ported from another machine can name a directory that does not
+    // exist here. Writing it under that phantom slug makes it impossible to
+    // reach from any real checkout, so fall back to the current directory.
+    const cwd = session.cwd && existsSync(session.cwd) ? session.cwd : process.cwd();
 
     const slug = claudeProjectSlug(cwd);
     const projectDir = join(projectsDir, slug);
@@ -372,6 +375,7 @@ export class ClaudeImporter implements Importer {
       target: 'claude',
       sessionId,
       path: filePath,
+      cwd,
       messageCount: session.messages.length,
     };
   }

@@ -219,6 +219,16 @@ function importSession(
     }
     console.log(`✅ Imported "${session.title}" → ${targetTool}`);
     console.log(`   Messages: ${result.messageCount}`);
+    if (result.cwd) {
+      console.log(`\n   Open from: cd ${result.cwd}`);
+      if (targetTool === 'claude') {
+        console.log(`   Resume:    claude --resume ${result.sessionId ?? ''}`.trimEnd());
+        console.log(`   (Inside the picker, Ctrl+A shows sessions from all projects.)`);
+      } else if (targetTool === 'opencode') {
+        console.log(`   Resume:    opencode --session ${result.sessionId ?? ''}`.trimEnd());
+        console.log(`   (OpenCode lists sessions per project, so run it from that directory.)`);
+      }
+    }
   } catch (err) {
     console.error(`❌ Import failed: ${(err as Error).message}`);
     process.exit(1);

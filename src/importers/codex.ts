@@ -197,6 +197,7 @@ export class CodexImporter implements Importer {
       target: 'codex',
       sessionId,
       path: filePath,
+      cwd: session.cwd || process.cwd(),
       messageCount: session.messages.length,
     };
   }

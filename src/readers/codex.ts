@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { StringDecoder } from 'string_decoder';
 import { join } from 'path';
 import type { SourceTool, ModelInfo, MessageIR, PartIR, SessionIR } from '../ir/types.js';
 import type { Reader, SessionSummary } from './types.js';
@@ -77,30 +78,83 @@ function findRolloutFile(sessionId: string, root: string): string | undefined {
   return undefined;
 }
 
-function parseCodexJsonl(filePath: string, content: string, threadName?: string): SessionIR {
-  const lines = content.split('\n').filter(Boolean);
-  const events: CodexEvent[] = lines.map((l) => JSON.parse(l));
+/**
+ * Yields a JSONL file one line at a time. A Codex rollout can be hundreds of
+ * megabytes; reading it whole and splitting it held several copies of the file
+ * in memory at once. StringDecoder keeps a multi-byte character that straddles
+ * a chunk boundary intact.
+ */
+function* readJsonlLines(filePath: string): Generator<string> {
+  const READ_CHUNK = 1 << 20;
+  const fd = openSync(filePath, 'r');
+  const decoder = new StringDecoder('utf8');
+  const buffer = Buffer.allocUnsafe(READ_CHUNK);
+  try {
+    let rest = '';
+    for (;;) {
+      const read = readSync(fd, buffer, 0, READ_CHUNK, null);
+      if (read === 0) break;
+      rest += decoder.write(buffer.subarray(0, read));
 
+      let newline = rest.indexOf('\n');
+      while (newline !== -1) {
+        yield rest.slice(0, newline);
+        rest = rest.slice(newline + 1);
+        newline = rest.indexOf('\n');
+      }
+    }
+    rest += decoder.end();
+    if (rest) yield rest;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * One damaged line used to abort the whole import, so the reader skips it and
+ * says what it skipped instead.
+ */
+function warnSkippedLines(filePath: string, skipped: number, firstLine: number): void {
+  if (skipped === 0) return;
+  const lines = skipped === 1 ? 'line' : 'lines';
+  console.warn(`Warning: skipped ${skipped} malformed ${lines} in ${filePath} (first at line ${firstLine})`);
+}
+
+function parseCodexJsonl(filePath: string, threadName?: string): SessionIR {
   let sessionId = '';
   let cwd = '';
   let modelProvider = '';
   let systemPrompt = '';
 
-  for (const e of events) {
-    if (e.type === 'session_meta' && e.payload) {
-      sessionId = e.payload.session_id ?? sessionId;
-      cwd = e.payload.cwd ?? cwd;
-      modelProvider = e.payload.model_provider ?? modelProvider;
-      systemPrompt = e.payload.base_instructions?.text ?? '';
-    }
-  }
+  let skipped = 0;
+  let firstSkippedLine = 0;
+  let lineNumber = 0;
 
   const messages: MessageIR[] = [];
   const pendingReasoning: PartIR[] = [];
   let currentCallId = '';
   let currentCallName = '';
 
-  for (const e of events) {
+  for (const line of readJsonlLines(filePath)) {
+    lineNumber++;
+    if (!line.trim()) continue;
+
+    let e: CodexEvent;
+    try {
+      e = JSON.parse(line) as CodexEvent;
+    } catch {
+      skipped++;
+      if (firstSkippedLine === 0) firstSkippedLine = lineNumber;
+      continue;
+    }
+
+    if (e.type === 'session_meta' && e.payload) {
+      sessionId = e.payload.session_id ?? sessionId;
+      cwd = e.payload.cwd ?? cwd;
+      modelProvider = e.payload.model_provider ?? modelProvider;
+      systemPrompt = e.payload.base_instructions?.text ?? '';
+    }
+
     if (e.type === 'turn_context') {
       continue;
     }
@@ -186,6 +240,8 @@ function parseCodexJsonl(filePath: string, content: string, threadName?: string)
     }
   }
 
+  warnSkippedLines(filePath, skipped, firstSkippedLine);
+
   const model: ModelInfo | undefined = modelProvider
     ? { provider: modelProvider === 'openai' ? 'openai' : modelProvider, id: modelProvider }
     : undefined;
@@ -256,9 +312,20 @@ export class CodexReader implements Reader {
 
     if (!existsSync(indexPath)) return results;
 
+    let content: string;
     try {
-      const content = readFileSync(indexPath, 'utf-8');
-      for (const line of content.split('\n').filter(Boolean)) {
+      content = readFileSync(indexPath, 'utf-8');
+    } catch {
+      return results;
+    }
+
+    let skipped = 0;
+    let firstSkippedLine = 0;
+    let lineNumber = 0;
+    for (const line of content.split('\n')) {
+      lineNumber++;
+      if (!line.trim()) continue;
+      try {
         const entry: CodexIndexEntry = JSON.parse(line);
         results.push({
           id: entry.id,
@@ -268,10 +335,12 @@ export class CodexReader implements Reader {
           updatedAt: new Date(entry.updated_at).getTime(),
           path: join(this.codexRoot, 'sessions'),
         });
+      } catch {
+        skipped++;
+        if (firstSkippedLine === 0) firstSkippedLine = lineNumber;
       }
-    } catch {
-      // ignore
     }
+    warnSkippedLines(indexPath, skipped, firstSkippedLine);
 
     results.sort((a, b) => b.updatedAt - a.updatedAt);
     return results;
@@ -282,13 +351,11 @@ export class CodexReader implements Reader {
     if (!rolloutPath) {
       throw new Error(`Codex session not found: ${id}`);
     }
-    const content = readFileSync(rolloutPath, 'utf-8');
-    return parseCodexJsonl(rolloutPath, content, this.threadName(id));
+    return parseCodexJsonl(rolloutPath, this.threadName(id));
   }
 
   readFromFile(filePath: string): SessionIR {
-    const content = readFileSync(filePath, 'utf-8');
-    return parseCodexJsonl(filePath, content);
+    return parseCodexJsonl(filePath);
   }
 
   /**
