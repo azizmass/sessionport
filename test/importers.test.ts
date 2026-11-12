@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { join } from 'path';
-import { readFileSync, existsSync, mkdirSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, rmSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
@@ -1054,6 +1054,39 @@ describe('OpenCodeImporter (v2 schema)', () => {
     if (resultPart?.kind === 'tool_result') {
       expect(resultPart.content).toContain('total 42');
     }
+  });
+
+  it('files a task-directory session under its own project, not the workspace parent', () => {
+    const parent = join(dir, 'workspace');
+    const child = join(parent, 'TASKS', 'task-a');
+    mkdirSync(child, { recursive: true });
+
+    const dbPath = makeDb('nested.db');
+    const db = new Database(dbPath);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO project (id, worktree, vcs, sandboxes, time_created, time_updated)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('workspace-project', parent, null, '[]', now - 1000, now - 1000);
+    db.close();
+
+    const result = new OpenCodeImporter(dbPath).importSession(
+      makeMinimalSession({ cwd: child }),
+    );
+
+    const check = new Database(dbPath);
+    const row = check
+      .prepare(
+        `SELECT s.project_id, p.worktree
+         FROM session_v2 s JOIN project p ON p.id = s.project_id
+         WHERE s.id = ?`,
+      )
+      .get(result.sessionId) as { project_id: string; worktree: string };
+    // Reusing the workspace parent made the session invisible when OpenCode was
+    // opened from the task directory, which is its own project.
+    expect(row.project_id).not.toBe('workspace-project');
+    expect(row.worktree).toBe(realpathSync(child));
+    check.close();
   });
 
   it('keeps plan exports on the plan agent', () => {

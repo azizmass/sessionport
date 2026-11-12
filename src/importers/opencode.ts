@@ -284,44 +284,52 @@ function resolveProject(
   cwd: string,
   now: number,
 ): { id: string; worktree: string; vcs: string | null } {
-  // Reuse a project OpenCode has already recorded for this checkout or a parent
-  // of it; that also covers linked worktrees and repos with no remote.
-  const existing = db
-    .prepare(
-      `SELECT id, worktree, vcs FROM project
-       WHERE worktree = ? OR (? LIKE worktree || '/%')
-       ORDER BY length(worktree) DESC LIMIT 1`,
-    )
-    .get(cwd, cwd) as
-    { id: string; worktree: string; vcs: string | null } | undefined;
-  if (existing) return existing;
+  let canonical = cwd;
+  let vcs: string | null = null;
+  let id: string;
 
+  // A directory inside a git repo belongs to that repo's project. Anything
+  // else is its own project, even when it sits under a workspace that already
+  // has a project row: OpenCode files each task directory separately.
   const top = git(cwd, ['rev-parse', '--show-toplevel']);
   if (top) {
+    canonical = top;
+    vcs = 'git';
     const remote = git(top, ['remote', 'get-url', 'origin']);
     const remoteKey = remote ? gitRemoteKey(remote) : undefined;
     if (remoteKey) {
-      return { id: sha1(`git-remote:${remoteKey}`), worktree: top, vcs: 'git' };
+      id = sha1(`git-remote:${remoteKey}`);
+    } else {
+      const rootCommit = git(top, [
+        'rev-list',
+        '--max-parents=0',
+        '--reverse',
+        'HEAD',
+      ])?.split('\n')[0];
+      id = rootCommit ?? sha1(`directory:${top}`);
     }
-
-    const rootCommit = git(top, [
-      'rev-list',
-      '--max-parents=0',
-      '--reverse',
-      'HEAD',
-    ])?.split('\n')[0];
-    if (rootCommit) return { id: rootCommit, worktree: top, vcs: 'git' };
-
-    return { id: sha1(`directory:${top}`), worktree: top, vcs: 'git' };
+  } else {
+    try {
+      canonical = realpathSync(cwd);
+    } catch {
+      // keep the absolute path we were given
+    }
+    id = sha1(`directory:${canonical}`);
   }
 
-  let directory = cwd;
-  try {
-    directory = realpathSync(cwd);
-  } catch {
-    // keep the absolute path we were given
-  }
-  return { id: sha1(`directory:${directory}`), worktree: directory, vcs: null };
+  // Reuse the row OpenCode already recorded for this exact checkout. Never a
+  // parent: that is how a session imported from a task directory ended up in
+  // the workspace project and stayed invisible when OpenCode was opened there.
+  const existing = db
+    .prepare(
+      `SELECT id, worktree, vcs FROM project
+       WHERE worktree = ? ORDER BY time_updated DESC LIMIT 1`,
+    )
+    .get(canonical) as
+    { id: string; worktree: string; vcs: string | null } | undefined;
+  if (existing) return existing;
+
+  return { id, worktree: canonical, vcs };
 }
 
 function parseV2Model(jsonStr: string | null): V2Model | undefined {
