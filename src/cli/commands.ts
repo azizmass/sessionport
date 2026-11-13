@@ -20,6 +20,7 @@ import type { ImportResult } from '../importers/types.js';
 import { displayTitle, formatSessionTime } from '../ir/normalize.js';
 import { extractPlans, selectPlans } from '../ir/plan.js';
 import { planSession, renderPlanMarkdown } from '../render/plan.js';
+import { printActivation } from './activate.js';
 
 // dist/ mirrors src/, so package.json sits two levels up either way.
 function packageVersion(): string {
@@ -219,16 +220,7 @@ function importSession(
     }
     console.log(`✅ Imported "${session.title}" → ${targetTool}`);
     console.log(`   Messages: ${result.messageCount}`);
-    if (result.cwd) {
-      console.log(`\n   Open from: cd ${result.cwd}`);
-      if (targetTool === 'claude') {
-        console.log(`   Resume:    claude --resume ${result.sessionId ?? ''}`.trimEnd());
-        console.log(`   (Inside the picker, Ctrl+A shows sessions from all projects.)`);
-      } else if (targetTool === 'opencode') {
-        console.log(`   Resume:    opencode --session ${result.sessionId ?? ''}`.trimEnd());
-        console.log(`   (OpenCode lists sessions per project, so run it from that directory.)`);
-      }
-    }
+    printActivation(targetTool, result);
   } catch (err) {
     console.error(`❌ Import failed: ${(err as Error).message}`);
     process.exit(1);
@@ -307,11 +299,7 @@ function exportPlan(
   if (quiet) return;
   const revisions = plans.length > 1 ? ` (${plans.length} revisions)` : '';
   console.log(`✅ Exported plan "${planIR.title}"${revisions} → ${target}`);
-  if (target === 'opencode') {
-    console.log(`   Open OpenCode and pick it from your session list to start executing it.`);
-  } else if (target === 'claude') {
-    console.log(`   Run \`claude --resume\` in ${planIR.cwd ?? 'the project directory'} to pick it up.`);
-  }
+  printActivation(target, result);
   if (result.path) console.log(`   ${result.path}`);
 }
 

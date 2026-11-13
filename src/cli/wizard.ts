@@ -14,6 +14,7 @@ import { CodexImporter } from '../importers/codex.js';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { displayTitle, formatSessionTime } from '../ir/normalize.js';
+import { printActivation } from './activate.js';
 import { extractPlans, selectPlans } from '../ir/plan.js';
 import { planSession, renderPlanMarkdown } from '../render/plan.js';
 
@@ -199,9 +200,7 @@ async function doImport(session: import('../ir/types.js').SessionIR, target: str
         console.log(`   Title: "${session.title}"`);
         console.log(`   Messages: ${result.messageCount}`);
         console.log(`   File: ${result.path}`);
-        if (result.cwd) console.log(`   Open from: cd ${result.cwd}`);
-        console.log(`\n   ▶ Run: claude --resume ${result.sessionId ?? ''}`.trimEnd());
-        console.log(`   (In the picker, Ctrl+A shows sessions from all projects.)`);
+        printActivation('claude', result);
         break;
       }
       case 'opencode': {
@@ -210,9 +209,7 @@ async function doImport(session: import('../ir/types.js').SessionIR, target: str
         console.log(`\n✅ Session imported into OpenCode!`);
         console.log(`   Title: "${session.title}"`);
         console.log(`   Messages: ${result.messageCount}`);
-        if (result.cwd) console.log(`   Open from: cd ${result.cwd}`);
-        console.log(`\n   ▶ Run: opencode --session ${result.sessionId ?? ''}`.trimEnd());
-        console.log(`   (OpenCode lists sessions per project, so run it from that directory.)`);
+        printActivation('opencode', result);
         console.log(`   (DB backup saved at: opencode.db.sessionport-backup)`);
         break;
       }
@@ -222,7 +219,7 @@ async function doImport(session: import('../ir/types.js').SessionIR, target: str
         console.log(`\n✅ Session imported into Codex!`);
         console.log(`   Title: "${session.title}"`);
         console.log(`   Messages: ${result.messageCount}`);
-        console.log(`\n   ▶ Open Codex and find "${session.title.slice(0, 40)}..." in your session list.`);
+        printActivation('codex', result);
         break;
       }
     }
